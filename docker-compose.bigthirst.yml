@@ -1,0 +1,52 @@
+services:
+  bigthirst-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: bigthirst.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - bigthirst-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.bigthirst.rule=Host(`bigthirst.linger.dev`)"
+      - "traefik.http.routers.bigthirst.entrypoints=websecure"
+      - "traefik.http.routers.bigthirst.tls.certresolver=leresolver"
+      - "traefik.http.services.bigthirst.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.bigthirst-http.rule=Host(`bigthirst.linger.dev`)"
+      - "traefik.http.routers.bigthirst-http.entrypoints=web"
+      - "traefik.http.routers.bigthirst-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  bigthirst-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: bigthirst.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - bigthirst-data:/data
+    networks:
+      - bigthirst-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  bigthirst-internal:
+
+volumes:
+  bigthirst-data:

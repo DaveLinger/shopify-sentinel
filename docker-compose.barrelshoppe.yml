@@ -1,0 +1,49 @@
+services:
+  barrelshoppe-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: barrelshoppe.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - barrelshoppe-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.barrelshoppe.rule=Host(`barrelshoppe.linger.dev`)"
+      - "traefik.http.routers.barrelshoppe.entrypoints=websecure"
+      - "traefik.http.routers.barrelshoppe.tls.certresolver=leresolver"
+      - "traefik.http.services.barrelshoppe.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.barrelshoppe-http.rule=Host(`barrelshoppe.linger.dev`)"
+      - "traefik.http.routers.barrelshoppe-http.entrypoints=web"
+      - "traefik.http.routers.barrelshoppe-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  barrelshoppe-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: barrelshoppe.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - barrelshoppe-data:/data
+    networks:
+      - barrelshoppe-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  barrelshoppe-internal:
+
+volumes:
+  barrelshoppe-data:

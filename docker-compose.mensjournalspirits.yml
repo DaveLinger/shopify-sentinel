@@ -1,0 +1,52 @@
+services:
+  mensjournalspirits-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: mensjournalspirits.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - mensjournalspirits-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.mensjournalspirits.rule=Host(`mensjournalspirits.linger.dev`)"
+      - "traefik.http.routers.mensjournalspirits.entrypoints=websecure"
+      - "traefik.http.routers.mensjournalspirits.tls.certresolver=leresolver"
+      - "traefik.http.services.mensjournalspirits.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.mensjournalspirits-http.rule=Host(`mensjournalspirits.linger.dev`)"
+      - "traefik.http.routers.mensjournalspirits-http.entrypoints=web"
+      - "traefik.http.routers.mensjournalspirits-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  mensjournalspirits-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: mensjournalspirits.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - mensjournalspirits-data:/data
+    networks:
+      - mensjournalspirits-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  mensjournalspirits-internal:
+
+volumes:
+  mensjournalspirits-data:

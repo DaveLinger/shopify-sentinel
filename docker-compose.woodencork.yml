@@ -1,0 +1,52 @@
+services:
+  woodencork-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: woodencork.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - woodencork-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.woodencork.rule=Host(`woodencork.linger.dev`)"
+      - "traefik.http.routers.woodencork.entrypoints=websecure"
+      - "traefik.http.routers.woodencork.tls.certresolver=leresolver"
+      - "traefik.http.services.woodencork.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.woodencork-http.rule=Host(`woodencork.linger.dev`)"
+      - "traefik.http.routers.woodencork-http.entrypoints=web"
+      - "traefik.http.routers.woodencork-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  woodencork-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: woodencork.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - woodencork-data:/data
+    networks:
+      - woodencork-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  woodencork-internal:
+
+volumes:
+  woodencork-data:

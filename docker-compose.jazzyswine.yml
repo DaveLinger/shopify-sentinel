@@ -1,0 +1,49 @@
+services:
+  jazzyswine-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: jazzyswine.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - jazzyswine-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.jazzyswine.rule=Host(`jazzyswine.linger.dev`)"
+      - "traefik.http.routers.jazzyswine.entrypoints=websecure"
+      - "traefik.http.routers.jazzyswine.tls.certresolver=leresolver"
+      - "traefik.http.services.jazzyswine.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.jazzyswine-http.rule=Host(`jazzyswine.linger.dev`)"
+      - "traefik.http.routers.jazzyswine-http.entrypoints=web"
+      - "traefik.http.routers.jazzyswine-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  jazzyswine-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: jazzyswine.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - jazzyswine-data:/data
+    networks:
+      - jazzyswine-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  jazzyswine-internal:
+
+volumes:
+  jazzyswine-data:

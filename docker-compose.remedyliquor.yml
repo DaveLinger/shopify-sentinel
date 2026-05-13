@@ -1,0 +1,49 @@
+services:
+  remedyliquor-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: remedyliquor.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - remedyliquor-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.remedyliquor.rule=Host(`remedyliquor.linger.dev`)"
+      - "traefik.http.routers.remedyliquor.entrypoints=websecure"
+      - "traefik.http.routers.remedyliquor.tls.certresolver=leresolver"
+      - "traefik.http.services.remedyliquor.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.remedyliquor-http.rule=Host(`remedyliquor.linger.dev`)"
+      - "traefik.http.routers.remedyliquor-http.entrypoints=web"
+      - "traefik.http.routers.remedyliquor-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  remedyliquor-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: remedyliquor.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - remedyliquor-data:/data
+    networks:
+      - remedyliquor-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  remedyliquor-internal:
+
+volumes:
+  remedyliquor-data:

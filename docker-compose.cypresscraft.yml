@@ -1,0 +1,49 @@
+services:
+  cypresscraft-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: cypresscraft.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - cypresscraft-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.cypresscraft.rule=Host(`cypresscraft.linger.dev`)"
+      - "traefik.http.routers.cypresscraft.entrypoints=websecure"
+      - "traefik.http.routers.cypresscraft.tls.certresolver=leresolver"
+      - "traefik.http.services.cypresscraft.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.cypresscraft-http.rule=Host(`cypresscraft.linger.dev`)"
+      - "traefik.http.routers.cypresscraft-http.entrypoints=web"
+      - "traefik.http.routers.cypresscraft-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  cypresscraft-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: cypresscraft.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - cypresscraft-data:/data
+    networks:
+      - cypresscraft-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  cypresscraft-internal:
+
+volumes:
+  cypresscraft-data:

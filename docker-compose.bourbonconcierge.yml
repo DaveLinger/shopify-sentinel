@@ -1,0 +1,49 @@
+services:
+  bourbonconcierge-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: bourbonconcierge.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - bourbonconcierge-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.bourbonconcierge.rule=Host(`bourbonconcierge.linger.dev`)"
+      - "traefik.http.routers.bourbonconcierge.entrypoints=websecure"
+      - "traefik.http.routers.bourbonconcierge.tls.certresolver=leresolver"
+      - "traefik.http.services.bourbonconcierge.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.bourbonconcierge-http.rule=Host(`bourbonconcierge.linger.dev`)"
+      - "traefik.http.routers.bourbonconcierge-http.entrypoints=web"
+      - "traefik.http.routers.bourbonconcierge-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  bourbonconcierge-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: bourbonconcierge.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - bourbonconcierge-data:/data
+    networks:
+      - bourbonconcierge-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  bourbonconcierge-internal:
+
+volumes:
+  bourbonconcierge-data:

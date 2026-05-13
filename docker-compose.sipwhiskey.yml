@@ -1,0 +1,52 @@
+services:
+  sipwhiskey-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: sipwhiskey.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - sipwhiskey-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.sipwhiskey.rule=Host(`sipwhiskey.linger.dev`)"
+      - "traefik.http.routers.sipwhiskey.entrypoints=websecure"
+      - "traefik.http.routers.sipwhiskey.tls.certresolver=leresolver"
+      - "traefik.http.services.sipwhiskey.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.sipwhiskey-http.rule=Host(`sipwhiskey.linger.dev`)"
+      - "traefik.http.routers.sipwhiskey-http.entrypoints=web"
+      - "traefik.http.routers.sipwhiskey-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  sipwhiskey-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: sipwhiskey.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - sipwhiskey-data:/data
+    networks:
+      - sipwhiskey-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  sipwhiskey-internal:
+
+volumes:
+  sipwhiskey-data:

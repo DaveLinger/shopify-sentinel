@@ -1,0 +1,52 @@
+services:
+  bourbonoutfitter-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: bourbonoutfitter.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - bourbonoutfitter-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.bourbonoutfitter.rule=Host(`bourbonoutfitter.linger.dev`)"
+      - "traefik.http.routers.bourbonoutfitter.entrypoints=websecure"
+      - "traefik.http.routers.bourbonoutfitter.tls.certresolver=leresolver"
+      - "traefik.http.services.bourbonoutfitter.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.bourbonoutfitter-http.rule=Host(`bourbonoutfitter.linger.dev`)"
+      - "traefik.http.routers.bourbonoutfitter-http.entrypoints=web"
+      - "traefik.http.routers.bourbonoutfitter-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  bourbonoutfitter-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: bourbonoutfitter.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - bourbonoutfitter-data:/data
+    networks:
+      - bourbonoutfitter-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  bourbonoutfitter-internal:
+
+volumes:
+  bourbonoutfitter-data:

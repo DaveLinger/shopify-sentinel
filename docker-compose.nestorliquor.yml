@@ -1,0 +1,52 @@
+services:
+  nestorliquor-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: nestorliquor.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - nestorliquor-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.nestorliquor.rule=Host(`nestorliquor.linger.dev`)"
+      - "traefik.http.routers.nestorliquor.entrypoints=websecure"
+      - "traefik.http.routers.nestorliquor.tls.certresolver=leresolver"
+      - "traefik.http.services.nestorliquor.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.nestorliquor-http.rule=Host(`nestorliquor.linger.dev`)"
+      - "traefik.http.routers.nestorliquor-http.entrypoints=web"
+      - "traefik.http.routers.nestorliquor-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  nestorliquor-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: nestorliquor.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - nestorliquor-data:/data
+    networks:
+      - nestorliquor-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  nestorliquor-internal:
+
+volumes:
+  nestorliquor-data:

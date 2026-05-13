@@ -1,0 +1,49 @@
+services:
+  tipxy-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: tipxy.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - tipxy-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.tipxy.rule=Host(`tipxy.linger.dev`)"
+      - "traefik.http.routers.tipxy.entrypoints=websecure"
+      - "traefik.http.routers.tipxy.tls.certresolver=leresolver"
+      - "traefik.http.services.tipxy.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.tipxy-http.rule=Host(`tipxy.linger.dev`)"
+      - "traefik.http.routers.tipxy-http.entrypoints=web"
+      - "traefik.http.routers.tipxy-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  tipxy-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: tipxy.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - tipxy-data:/data
+    networks:
+      - tipxy-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  tipxy-internal:
+
+volumes:
+  tipxy-data:

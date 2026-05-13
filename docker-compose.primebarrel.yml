@@ -1,0 +1,49 @@
+services:
+  primebarrel-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: primebarrel.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - primebarrel-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.primebarrel.rule=Host(`primebarrel.linger.dev`)"
+      - "traefik.http.routers.primebarrel.entrypoints=websecure"
+      - "traefik.http.routers.primebarrel.tls.certresolver=leresolver"
+      - "traefik.http.services.primebarrel.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.primebarrel-http.rule=Host(`primebarrel.linger.dev`)"
+      - "traefik.http.routers.primebarrel-http.entrypoints=web"
+      - "traefik.http.routers.primebarrel-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  primebarrel-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: primebarrel.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - primebarrel-data:/data
+    networks:
+      - primebarrel-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  primebarrel-internal:
+
+volumes:
+  primebarrel-data:

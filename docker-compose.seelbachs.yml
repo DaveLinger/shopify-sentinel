@@ -1,0 +1,49 @@
+services:
+  seelbachs-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: seelbachs.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - seelbachs-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.seelbachs.rule=Host(`seelbachs.linger.dev`)"
+      - "traefik.http.routers.seelbachs.entrypoints=websecure"
+      - "traefik.http.routers.seelbachs.tls.certresolver=leresolver"
+      - "traefik.http.services.seelbachs.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.seelbachs-http.rule=Host(`seelbachs.linger.dev`)"
+      - "traefik.http.routers.seelbachs-http.entrypoints=web"
+      - "traefik.http.routers.seelbachs-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  seelbachs-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: seelbachs.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - seelbachs-data:/data
+    networks:
+      - seelbachs-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  seelbachs-internal:
+
+volumes:
+  seelbachs-data:

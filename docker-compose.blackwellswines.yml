@@ -1,0 +1,49 @@
+services:
+  blackwellswines-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: blackwellswines.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - blackwellswines-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.blackwellswines.rule=Host(`blackwellswines.linger.dev`)"
+      - "traefik.http.routers.blackwellswines.entrypoints=websecure"
+      - "traefik.http.routers.blackwellswines.tls.certresolver=leresolver"
+      - "traefik.http.services.blackwellswines.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.blackwellswines-http.rule=Host(`blackwellswines.linger.dev`)"
+      - "traefik.http.routers.blackwellswines-http.entrypoints=web"
+      - "traefik.http.routers.blackwellswines-http.middlewares=redirect-to-https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  blackwellswines-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: blackwellswines.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - blackwellswines-data:/data
+    networks:
+      - blackwellswines-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  blackwellswines-internal:
+
+volumes:
+  blackwellswines-data:

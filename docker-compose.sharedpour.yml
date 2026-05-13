@@ -1,0 +1,52 @@
+services:
+  sharedpour-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: sharedpour.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - sharedpour-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.sharedpour.rule=Host(`sharedpour.linger.dev`)"
+      - "traefik.http.routers.sharedpour.entrypoints=websecure"
+      - "traefik.http.routers.sharedpour.tls.certresolver=leresolver"
+      - "traefik.http.services.sharedpour.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.sharedpour-http.rule=Host(`sharedpour.linger.dev`)"
+      - "traefik.http.routers.sharedpour-http.entrypoints=web"
+      - "traefik.http.routers.sharedpour-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  sharedpour-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: sharedpour.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - sharedpour-data:/data
+    networks:
+      - sharedpour-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  sharedpour-internal:
+
+volumes:
+  sharedpour-data:

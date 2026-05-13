@@ -1,0 +1,52 @@
+services:
+  hiproof-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: hiproof.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - hiproof-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.hiproof.rule=Host(`hiproof.linger.dev`)"
+      - "traefik.http.routers.hiproof.entrypoints=websecure"
+      - "traefik.http.routers.hiproof.tls.certresolver=leresolver"
+      - "traefik.http.services.hiproof.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.hiproof-http.rule=Host(`hiproof.linger.dev`)"
+      - "traefik.http.routers.hiproof-http.entrypoints=web"
+      - "traefik.http.routers.hiproof-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  hiproof-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: hiproof.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - hiproof-data:/data
+    networks:
+      - hiproof-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  hiproof-internal:
+
+volumes:
+  hiproof-data:
