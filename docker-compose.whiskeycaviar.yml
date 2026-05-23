@@ -1,0 +1,52 @@
+services:
+  whiskeycaviar-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: whiskeycaviar.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - whiskeycaviar-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.whiskeycaviar.rule=Host(`whiskeycaviar.linger.dev`)"
+      - "traefik.http.routers.whiskeycaviar.entrypoints=websecure"
+      - "traefik.http.routers.whiskeycaviar.tls.certresolver=leresolver"
+      - "traefik.http.services.whiskeycaviar.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.whiskeycaviar-http.rule=Host(`whiskeycaviar.linger.dev`)"
+      - "traefik.http.routers.whiskeycaviar-http.entrypoints=web"
+      - "traefik.http.routers.whiskeycaviar-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  whiskeycaviar-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: whiskeycaviar.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - whiskeycaviar-data:/data
+    networks:
+      - whiskeycaviar-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  whiskeycaviar-internal:
+
+volumes:
+  whiskeycaviar-data:

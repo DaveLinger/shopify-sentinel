@@ -1,0 +1,52 @@
+services:
+  elcerritoliquor-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: elcerritoliquor.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - elcerritoliquor-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.elcerritoliquor.rule=Host(`elcerritoliquor.linger.dev`)"
+      - "traefik.http.routers.elcerritoliquor.entrypoints=websecure"
+      - "traefik.http.routers.elcerritoliquor.tls.certresolver=leresolver"
+      - "traefik.http.services.elcerritoliquor.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.elcerritoliquor-http.rule=Host(`elcerritoliquor.linger.dev`)"
+      - "traefik.http.routers.elcerritoliquor-http.entrypoints=web"
+      - "traefik.http.routers.elcerritoliquor-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  elcerritoliquor-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: elcerritoliquor.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - elcerritoliquor-data:/data
+    networks:
+      - elcerritoliquor-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  elcerritoliquor-internal:
+
+volumes:
+  elcerritoliquor-data:

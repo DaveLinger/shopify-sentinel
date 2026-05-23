@@ -35,6 +35,10 @@ Both processes read all configuration from environment variables. The `server` a
 | DarkArtsWhiskey | `docker-compose.darkartswhiskey.yml` | `darkartswhiskey.env` | `darkartswhiskey.linger.dev` |
 | BigThirst | `docker-compose.bigthirst.yml` | `bigthirst.env` | `bigthirst.linger.dev` |
 | BourbonOutfitter | `docker-compose.bourbonoutfitter.yml` | `bourbonoutfitter.env` | `bourbonoutfitter.linger.dev` |
+| WhiskeyCaviar | `docker-compose.whiskeycaviar.yml` | `whiskeycaviar.env` | `whiskeycaviar.linger.dev` |
+| BondedBottleShop | `docker-compose.bondedbottleshop.yml` | `bondedbottleshop.env` | `bondedbottleshop.linger.dev` |
+| BourbonDirect | `docker-compose.bourbondirect.yml` | `bourbondirect.env` | `bourbondirect.linger.dev` |
+| ElCerritoLiquor | `docker-compose.elcerritoliquor.yml` | `elcerritoliquor.env` | `elcerritoliquor.linger.dev` |
 
 ### Deploy commands
 

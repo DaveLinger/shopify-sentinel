@@ -1,0 +1,52 @@
+services:
+  bondedbottleshop-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: bondedbottleshop.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - bondedbottleshop-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.bondedbottleshop.rule=Host(`bondedbottleshop.linger.dev`)"
+      - "traefik.http.routers.bondedbottleshop.entrypoints=websecure"
+      - "traefik.http.routers.bondedbottleshop.tls.certresolver=leresolver"
+      - "traefik.http.services.bondedbottleshop.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.bondedbottleshop-http.rule=Host(`bondedbottleshop.linger.dev`)"
+      - "traefik.http.routers.bondedbottleshop-http.entrypoints=web"
+      - "traefik.http.routers.bondedbottleshop-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  bondedbottleshop-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: bondedbottleshop.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - bondedbottleshop-data:/data
+    networks:
+      - bondedbottleshop-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  bondedbottleshop-internal:
+
+volumes:
+  bondedbottleshop-data:
