@@ -27,8 +27,9 @@ const PRODUCT_TAG_FILTER       = process.env.PRODUCT_TAG_FILTER
 const PRODUCT_TYPE_FILTER      = process.env.PRODUCT_TYPE_FILTER
   ? new Set(process.env.PRODUCT_TYPE_FILTER.split(',').map(s => s.trim()).filter(Boolean))
   : null;
-const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN || '';
-const INTERVAL_MS              = 15 * 60 * 1000; // 15 minutes
+const SHOPIFY_STOREFRONT_TOKEN  = process.env.SHOPIFY_STOREFRONT_TOKEN || '';
+const CHECK_PRODUCT_VISIBILITY  = process.env.CHECK_PRODUCT_VISIBILITY === 'true';
+const INTERVAL_MS               = 15 * 60 * 1000; // 15 minutes
 const MIN_PRICE_DROP           = 4.99;           // only alert if drop exceeds this
 const STORE_PATH               = '/data/known_products.json';
 const LEGACY_STORE_PATH        = '/data/known_ids.json';
@@ -225,6 +226,43 @@ function sendDiscord(text) {
   });
 }
 
+// Returns false if the product page is passcode-gated by Locksmith (remote_lock:true, manual_lock:false).
+// Products with manual_lock:true are accessible to logged-in customers and are treated as public.
+// On any network error, timeout, or missing Locksmith data, returns true (assume public — don't suppress).
+function isProductPagePublic(handle) {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: SHOPIFY_HOST,
+      path: '/products/' + handle,
+      method: 'GET',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; catalog-watcher/1.0)' }
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400) {
+        res.resume();
+        resolve(false);
+        return;
+      }
+      let body = '';
+      res.on('data', chunk => {
+        body += chunk;
+        if (body.length > 524288) { res.destroy(); resolve(true); }
+      });
+      res.on('end', () => {
+        const m = body.match(/application\/vnd\.locksmith\+json[^>]*>(\{[\s\S]*?\})<\/script>/);
+        if (!m) { resolve(true); return; }
+        try {
+          const ls = JSON.parse(m[1]);
+          // Passcode-only: no manual lock conditions, only a remote (passcode) key
+          resolve(!(ls.remote_lock === true && ls.manual_lock === false));
+        } catch (e) { resolve(true); }
+      });
+    });
+    req.on('error', () => resolve(true));
+    req.setTimeout(10000, () => { req.destroy(); resolve(true); });
+    req.end();
+  });
+}
+
 // Tells the local server to refresh its cache immediately (fire-and-forget)
 function invalidateServerCache() {
   const req = http.request({
@@ -355,7 +393,9 @@ async function check() {
     if (!(id in knownProducts)) {
       // Never seen before — flag as new if created recently (and not first run)
       if (!isFirstRun && new Date(p.created_at).getTime() > oneDayAgo) {
-        newProducts.push(p);
+        const publiclyAccessible = CHECK_PRODUCT_VISIBILITY ? await isProductPagePublic(p.handle) : true;
+        if (publiclyAccessible) newProducts.push(p);
+        else console.log('[' + timestamp() + '] Skipping notification for protected product: ' + p.title);
       }
       knownProducts[id] = { price: currentPrice, title: p.title, history: [] };
       changed = true;
