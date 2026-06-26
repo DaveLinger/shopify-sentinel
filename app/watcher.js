@@ -392,12 +392,15 @@ async function check() {
 
     if (!(id in knownProducts)) {
       // Never seen before — flag as new if created recently (and not first run)
+      let isProtected = false;
       if (!isFirstRun && new Date(p.created_at).getTime() > oneDayAgo) {
         const publiclyAccessible = CHECK_PRODUCT_VISIBILITY ? await isProductPagePublic(p.handle) : true;
         if (publiclyAccessible) newProducts.push(p);
-        else console.log('[' + timestamp() + '] Skipping notification for protected product: ' + p.title);
+        else { isProtected = true; console.log('[' + timestamp() + '] Skipping notification for protected product: ' + p.title); }
       }
       knownProducts[id] = { price: currentPrice, title: p.title, history: [] };
+      // Remember passcode-protected products so later price drops don't alert either
+      if (isProtected) knownProducts[id].protected = true;
       changed = true;
     } else {
       const entry      = knownProducts[id];
@@ -410,8 +413,9 @@ async function check() {
       }
 
       // Price drop detection: must exceed MIN_PRICE_DROP threshold
+      // (skip passcode-protected products — flagged when first seen)
       if (knownPrice !== null && currentPrice !== null && currentPrice < knownPrice &&
-          (knownPrice - currentPrice) > MIN_PRICE_DROP) {
+          (knownPrice - currentPrice) > MIN_PRICE_DROP && !entry.protected) {
         priceDrops.push({ product: p, oldPrice: knownPrice, newPrice: currentPrice });
       }
 

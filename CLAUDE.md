@@ -78,6 +78,7 @@ docker compose -f docker-compose.<name>.yml up -d --build
 | `SHOW_TYPE_COLUMN` | `true` | Show/hide the Type column and filter |
 | `DEFAULT_AVAIL_FILTER` | `` (all) | Pre-select availability filter (`true` = In Stock) |
 | `DISCORD_URL` | `` (disabled) | Discord webhook URL |
+| `CHECK_PRODUCT_VISIBILITY` | `false` | When `true`, the watcher checks each newly-seen product's page for a passcode-only Locksmith lock and suppresses alerts for protected products. Enabled only for WhiskeyBlendery. |
 
 ## Server
 
@@ -98,6 +99,7 @@ docker compose -f docker-compose.<name>.yml up -d --build
 - On new products: invalidates server cache (fire-and-forget), then sends Discord notification
 - On price drops (decrease in `min(variants[].price)` **exceeding $4.99**): sends Discord notification with old → new price; does not invalidate cache (server refreshes on its own 10-min TTL)
 - On product removals (product present in `known_products.json` but absent from current fetch): removes from tracking and logs to console (no Discord alert)
+- When `CHECK_PRODUCT_VISIBILITY=true`, a newly-seen product gated behind a passcode-only Locksmith lock is added to tracking with `protected: true` and gets **no** new-product alert; the flag also suppresses later price-drop alerts. Visibility is checked once (at first sighting), never re-fetched.
 - Price history is stored per product as `{ price, date }` entries: at most one entry per calendar day, capped at 30 entries per product
 - Polls on a jittered schedule: checks immediately on start, then waits a random 1–15 min before the second check, which sets the cadence for all subsequent 15-min polls — prevents lockstep polling when all deployments are relaunched at once
 - `DISCORD_URL` is optional; set to empty string to disable
@@ -133,6 +135,7 @@ The Storefront Access Token is a public token visible in the store's HTML (look 
 - **Price drop tracking**: Watcher stores `min(variants[].price)` per product. A drop only fires an alert if the decrease exceeds **$4.99** (`MIN_PRICE_DROP`) to filter out minor fluctuations. `compare_at_price` is intentionally ignored. Products with only $0 variants have `price: null` (no alerts, no history).
 - **Price history**: Stored per product as `history: [{price, date}]` alongside the current price. At most one entry per calendar day (later change for the same day overwrites earlier), capped at 30 entries per product. History only grows on price changes, not on every poll.
 - **Product removal detection**: Watcher compares fetched product IDs against known IDs each cycle. Products that disappear are removed from tracking and trigger a Discord alert (using stored title).
+- **Protected-product suppression**: Some stores (WhiskeyBlendery) passcode-protect listings via the Locksmith app, yet those products still appear in `/products.json`. With `CHECK_PRODUCT_VISIBILITY=true`, the watcher fetches the product page on first sighting and inspects the embedded `application/vnd.locksmith+json` state; a passcode-only lock (`remote_lock === true && manual_lock === false`) marks the entry `protected: true`. The check fails open (alerts on any redirect-free fetch error, parse failure, or timeout) and runs only at first sighting to avoid an HTTP request per product per poll. The `protected` flag — persisted in `known_products.json` — gates **both** new-product and price-drop alerts. It is never set for catalogs that leave `CHECK_PRODUCT_VISIBILITY` unset, so their behavior is unchanged.
 - **Storage format**: `known_products.json` stores `{ [id]: { price, title, history } }`. Old flat `{ id: price }` format is auto-migrated on first load.
 - **Jittered polling**: On start, watcher checks immediately, then waits a random 1–15 min before the second check, which anchors all subsequent 15-min polls. This prevents all deployments from hammering Shopify in lockstep when relaunched together via `up-all.sh`.
 - **Storage migration**: Watcher auto-migrates from the old flat-array `known_ids.json` to the new `{ id: price }` format in `known_products.json`. Migrated entries get `null` as their price baseline so no false price-drop alerts fire on the first run after upgrade.
