@@ -39,6 +39,8 @@ Both processes read all configuration from environment variables. The `server` a
 | BondedBottleShop | `docker-compose.bondedbottleshop.yml` | `bondedbottleshop.env` | `bondedbottleshop.linger.dev` |
 | BourbonDirect | `docker-compose.bourbondirect.yml` | `bourbondirect.env` | `bourbondirect.linger.dev` |
 | ElCerritoLiquor | `docker-compose.elcerritoliquor.yml` | `elcerritoliquor.env` | `elcerritoliquor.linger.dev` |
+| LuekensLiquors | `docker-compose.luekensliquors.yml` | `luekensliquors.env` | `luekensliquors.linger.dev` |
+| OnyxAmber | `docker-compose.onyxamber.yml` | `onyxamber.env` | `onyxamber.linger.dev` |
 
 ### Deploy commands
 

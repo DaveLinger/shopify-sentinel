@@ -1,0 +1,52 @@
+services:
+  luekensliquors-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: luekensliquors.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - luekensliquors-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.luekensliquors.rule=Host(`luekensliquors.linger.dev`)"
+      - "traefik.http.routers.luekensliquors.entrypoints=websecure"
+      - "traefik.http.routers.luekensliquors.tls.certresolver=leresolver"
+      - "traefik.http.services.luekensliquors.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.luekensliquors-http.rule=Host(`luekensliquors.linger.dev`)"
+      - "traefik.http.routers.luekensliquors-http.entrypoints=web"
+      - "traefik.http.routers.luekensliquors-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  luekensliquors-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: luekensliquors.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - luekensliquors-data:/data
+    networks:
+      - luekensliquors-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  luekensliquors-internal:
+
+volumes:
+  luekensliquors-data:

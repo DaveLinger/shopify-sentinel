@@ -1,0 +1,52 @@
+services:
+  onyxamber-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: onyxamber.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - onyxamber-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.onyxamber.rule=Host(`onyxamber.linger.dev`)"
+      - "traefik.http.routers.onyxamber.entrypoints=websecure"
+      - "traefik.http.routers.onyxamber.tls.certresolver=leresolver"
+      - "traefik.http.services.onyxamber.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.onyxamber-http.rule=Host(`onyxamber.linger.dev`)"
+      - "traefik.http.routers.onyxamber-http.entrypoints=web"
+      - "traefik.http.routers.onyxamber-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  onyxamber-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: onyxamber.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - onyxamber-data:/data
+    networks:
+      - onyxamber-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  onyxamber-internal:
+
+volumes:
+  onyxamber-data:
