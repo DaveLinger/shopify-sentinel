@@ -88,12 +88,20 @@ Response header `X-Cache: HIT | STALE | MISS` indicates whether the response was
 
 | Alert | Condition |
 |---|---|
-| New product | Product appears that wasn't in the previous fetch and was created within the last 24 hours |
-| Price drop | `min(variants[].price)` decreases by more than $4.99 since the last check |
+| New product | Product appears that wasn't in the previous fetch and was created within the last 24 hours. Out-of-stock listings are marked `❌ OUT OF STOCK` |
+| Price drop | `min(variants[].price)` decreases by more than $4.99 since the last check. Includes 30-day-low context ("lowest we've seen in 30 days at this retailer") from stored history |
+| Back in stock | A tracked product's availability flips false → true after being out of stock for at least 20 minutes (flap damping) — detected from the same poll data, no extra requests |
 
-Product removals are detected and removed from tracking silently (no Discord alert).
+Product removals are detected and removed from tracking silently (no Discord alert). Alerts longer than Discord's message limit are split into multiple webhook posts, each repeating the header.
 
-Price history is stored per product (one entry per calendar day, capped at 30) in a Docker named volume alongside `known_products.json`. State persists across restarts — no duplicate alerts, no false price-drop alerts after a restart.
+Price history and availability are stored per product (history: one entry per calendar day, capped at 30) in a Docker named volume in `known_products.json`. State persists across restarts — no duplicate alerts, no false price-drop or restock alerts after a restart.
+
+## Works with (optional integrations)
+
+Fully standalone — the only outputs are the catalog HTTP API and Discord webhook posts. Two sister projects build on those outputs; nothing here depends on them:
+
+- **[bourbon-find-bot](https://github.com/DaveLinger/bourbon-find-bot)** searches all deployments' `/api/products.json` endpoints from Discord (`/find`), auto-discovering them from this repo's compose/env files when it runs on the same host.
+- **[discord-notify-bot](https://github.com/DaveLinger/discord-notify-bot)** watches the alert channels for keyword DMs, and parses New Products alerts to offer restock-monitor buttons on out-of-stock listings. The alert line format (`title ($price) [❌ OUT OF STOCK] - url` under a `**<name>: New Products**` header) is therefore a parsing contract — see the comment in `watcher.js` before reformatting it.
 
 ## Storefront API (Buy Button products)
 

@@ -31,6 +31,7 @@ const SHOPIFY_STOREFRONT_TOKEN  = process.env.SHOPIFY_STOREFRONT_TOKEN || '';
 const CHECK_PRODUCT_VISIBILITY  = process.env.CHECK_PRODUCT_VISIBILITY === 'true';
 const INTERVAL_MS               = 15 * 60 * 1000; // 15 minutes
 const MIN_PRICE_DROP           = 4.99;           // only alert if drop exceeds this
+const RESTOCK_MIN_OOS_MS       = 20 * 60 * 1000; // must be out of stock this long before a restock alerts (flap damping)
 const STORE_PATH               = '/data/known_products.json';
 const LEGACY_STORE_PATH        = '/data/known_ids.json';
 
@@ -204,6 +205,27 @@ async function fetchAllProducts() {
   });
 }
 
+// Sends a header + lines, splitting into multiple webhook posts if needed to stay
+// under Discord's 2000-char message limit. Every chunk repeats the header so
+// downstream parsers (notify-bot) see a complete message each time.
+async function sendDiscordLines(header, lines) {
+  const LIMIT = 1900;
+  let batch = [];
+  let size = header.length;
+  let last = null;
+  for (const line of lines) {
+    if (batch.length > 0 && size + line.length + 1 > LIMIT) {
+      last = await sendDiscord(header + '\n' + batch.join('\n'));
+      batch = [];
+      size = header.length;
+    }
+    batch.push(line);
+    size += line.length + 1;
+  }
+  if (batch.length > 0) last = await sendDiscord(header + '\n' + batch.join('\n'));
+  return last;
+}
+
 // Sends a Discord notification via webhook
 function sendDiscord(text) {
   return new Promise((resolve, reject) => {
@@ -298,6 +320,22 @@ function formatPrice(price) {
   return '$' + price.toFixed(2);
 }
 
+// True if any variant is purchasable. Subject to the collection-endpoint accuracy
+// limitation (inventory_policy: continue stores report false at zero inventory).
+function isProductAvailable(product) {
+  return product.variants.some(v => v.available);
+}
+
+// Lowest price observed in the last 30 days (history entries within window + current price).
+function thirtyDayLow(entry) {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const prices = entry.history
+    .filter(h => h.date >= cutoff && h.price !== null)
+    .map(h => h.price);
+  if (entry.price !== null) prices.push(entry.price);
+  return prices.length ? Math.min(...prices) : null;
+}
+
 // Appends a price change to an entry's history.
 // At most one entry per calendar day (later change overwrites the earlier one for that day).
 // Capped at 30 entries total.
@@ -327,6 +365,9 @@ function loadKnownProducts() {
           title:   val.title   ?? null,
           history: Array.isArray(val.history) ? val.history : [],
         };
+        if (val.protected) result[id].protected = true;
+        if (typeof val.available === 'boolean') result[id].available = val.available;
+        if (val.oosSince) result[id].oosSince = val.oosSince;
       }
     }
     return result;
@@ -371,6 +412,7 @@ async function check() {
   const fetchedIds = new Set(products.map(p => String(p.id)));
   const newProducts    = [];
   const priceDrops     = [];
+  const restocks       = [];
   const removedTitles  = [];
   let changed = false;
 
@@ -389,6 +431,7 @@ async function check() {
   for (const p of products) {
     const id           = String(p.id);
     const currentPrice = minPrice(p);
+    const nowAvail     = isProductAvailable(p);
 
     if (!(id in knownProducts)) {
       // Never seen before — flag as new if created recently (and not first run)
@@ -398,7 +441,8 @@ async function check() {
         if (publiclyAccessible) newProducts.push(p);
         else { isProtected = true; console.log('[' + timestamp() + '] Skipping notification for protected product: ' + p.title); }
       }
-      knownProducts[id] = { price: currentPrice, title: p.title, history: [] };
+      knownProducts[id] = { price: currentPrice, title: p.title, history: [], available: nowAvail };
+      if (!nowAvail) knownProducts[id].oosSince = Date.now();
       // Remember passcode-protected products so later price drops don't alert either
       if (isProtected) knownProducts[id].protected = true;
       changed = true;
@@ -412,11 +456,32 @@ async function check() {
         changed = true;
       }
 
+      // Availability transitions. First sighting after upgrade (undefined) just records
+      // the state; a false→true flip alerts only if it was out of stock long enough
+      // (RESTOCK_MIN_OOS_MS) to filter inventory-toggle flapping.
+      if (entry.available === undefined) {
+        entry.available = nowAvail;
+        if (!nowAvail) entry.oosSince = Date.now();
+        changed = true;
+      } else if (entry.available && !nowAvail) {
+        entry.available = false;
+        entry.oosSince = Date.now();
+        changed = true;
+      } else if (!entry.available && nowAvail) {
+        const oosLongEnough = entry.oosSince && (Date.now() - entry.oosSince) >= RESTOCK_MIN_OOS_MS;
+        if (oosLongEnough && !entry.protected) {
+          restocks.push({ product: p, price: currentPrice });
+        }
+        entry.available = true;
+        delete entry.oosSince;
+        changed = true;
+      }
+
       // Price drop detection: must exceed MIN_PRICE_DROP threshold
       // (skip passcode-protected products — flagged when first seen)
       if (knownPrice !== null && currentPrice !== null && currentPrice < knownPrice &&
           (knownPrice - currentPrice) > MIN_PRICE_DROP && !entry.protected) {
-        priceDrops.push({ product: p, oldPrice: knownPrice, newPrice: currentPrice });
+        priceDrops.push({ product: p, oldPrice: knownPrice, newPrice: currentPrice, low30: thirtyDayLow(entry) });
       }
 
       // Record price change in history
@@ -453,12 +518,39 @@ async function check() {
 
     if (DISCORD_URL) {
       try {
+        // CONTRACT: discord-notify-bot parses these messages (parseAlertLine in its
+        // bot.js) — header `**<name>: New Products**`, lines `title ($price)
+        // [❌ OUT OF STOCK] - url` — to attach hot-monitor buttons and cross-store
+        // footnotes. Changing this format silently breaks those replies.
         const productLines = newProducts.map(p => {
           const price = minPrice(p);
           const priceStr = price !== null ? ' (' + formatPrice(price) + ')' : '';
-          return p.title + priceStr + ' - ' + PRODUCT_URL_BASE + p.handle;
-        }).join('\n');
-        const result = await sendDiscord('**' + PROJECT_NAME + ': New Products**\n' + productLines);
+          const oosStr   = isProductAvailable(p) ? '' : ' ❌ OUT OF STOCK';
+          return p.title + priceStr + oosStr + ' - ' + PRODUCT_URL_BASE + p.handle;
+        });
+        const result = await sendDiscordLines('**' + PROJECT_NAME + ': New Products**', productLines);
+        console.log('[' + timestamp() + '] Discord notified (HTTP ' + result.status + ')');
+      } catch (err) {
+        console.error('[' + timestamp() + '] ERROR sending Discord notification:', err.message);
+      }
+    }
+  }
+
+  // ── Restocks ──────────────────────────────────────────────────────────────
+
+  if (restocks.length > 0) {
+    const names = restocks.map(r => r.product.title).join(', ');
+    console.log('[' + timestamp() + '] ' + restocks.length + ' restock' + (restocks.length > 1 ? 's' : '') + ' detected: ' + names);
+
+    invalidateServerCache();
+
+    if (DISCORD_URL) {
+      try {
+        const restockLines = restocks.map(r => {
+          const priceStr = r.price !== null ? ' (' + formatPrice(r.price) + ')' : '';
+          return '🔄 ' + r.product.title + priceStr + ' - ' + PRODUCT_URL_BASE + r.product.handle;
+        });
+        const result = await sendDiscordLines('**' + PROJECT_NAME + ': Back in Stock**', restockLines);
         console.log('[' + timestamp() + '] Discord notified (HTTP ' + result.status + ')');
       } catch (err) {
         console.error('[' + timestamp() + '] ERROR sending Discord notification:', err.message);
@@ -477,11 +569,14 @@ async function check() {
 
     if (DISCORD_URL) {
       try {
-        const dropLines = priceDrops.map(d =>
-          d.product.title + ': ' + formatPrice(d.oldPrice) + ' → ' + formatPrice(d.newPrice) +
-          ' — ' + PRODUCT_URL_BASE + d.product.handle
-        ).join('\n');
-        const result = await sendDiscord('**' + PROJECT_NAME + ': Price Drops**\n' + dropLines);
+        const dropLines = priceDrops.map(d => {
+          const lowStr = d.low30 !== null && d.newPrice <= d.low30
+            ? ' 🔻 lowest we\'ve seen in 30 days at this retailer'
+            : (d.low30 !== null ? ' (30-day low at this retailer: ' + formatPrice(d.low30) + ')' : '');
+          return d.product.title + ': ' + formatPrice(d.oldPrice) + ' → ' + formatPrice(d.newPrice) +
+            lowStr + ' — ' + PRODUCT_URL_BASE + d.product.handle;
+        });
+        const result = await sendDiscordLines('**' + PROJECT_NAME + ': Price Drops**', dropLines);
         console.log('[' + timestamp() + '] Discord notified (HTTP ' + result.status + ')');
       } catch (err) {
         console.error('[' + timestamp() + '] ERROR sending Discord notification:', err.message);
@@ -489,7 +584,7 @@ async function check() {
     }
   }
 
-  if (newProducts.length === 0 && priceDrops.length === 0 && removedTitles.length === 0) {
+  if (newProducts.length === 0 && priceDrops.length === 0 && restocks.length === 0 && removedTitles.length === 0) {
     console.log('[' + timestamp() + '] No changes. Total known: ' + Object.keys(knownProducts).length);
   }
 }
