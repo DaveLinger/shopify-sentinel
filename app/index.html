@@ -46,6 +46,8 @@
   .price { font-weight: 600; }
   .compare { text-decoration: line-through; color: #999; font-size: 0.8rem; margin-left: 4px; }
   .sale { color: #c0392b; }
+  .discount { font-weight: 600; }
+  .discount-none { color: #bbb; }
   .table-wrap { overflow-x: auto; }
   #main-controls { display: none; }
   @media(max-width: 700px) { td.tags-cell, th.tags-col { display: none; } }
@@ -84,6 +86,7 @@
         <th data-col="vendor">Vendor</th>
         <th data-col="product_type">Type</th>
         <th data-col="price">Price</th>
+        <th data-col="discount">Discount</th>
         <th data-col="available">Available</th>
         <th data-col="variant_count">Variants</th>
         <th data-col="created_at">Created</th>
@@ -153,6 +156,9 @@ function render() {
     const priceHtml = isSale
       ? '<span class="price sale">$' + p.price.toFixed(2) + '</span><span class="compare">$' + p.compare_at_price.toFixed(2) + '</span>'
       : '<span class="price">$' + p.price.toFixed(2) + '</span>';
+    const discountHtml = p.discount > 0
+      ? '<span class="discount sale">' + p.discount + '%</span>'
+      : '<span class="discount-none">—</span>';
     const availBadge = p.available
       ? '<span class="badge-avail badge-yes">In Stock</span>'
       : '<span class="badge-avail badge-no">Out of Stock</span>';
@@ -163,6 +169,7 @@ function render() {
       + '<td>' + (p.vendor||'') + '</td>'
       + '<td class="type-cell">' + (p.product_type||'') + '</td>'
       + '<td>' + priceHtml + '</td>'
+      + '<td style="text-align:right">' + discountHtml + '</td>'
       + '<td>' + availBadge + '</td>'
       + '<td style="text-align:center">' + p.variant_count + '</td>'
       + '<td class="date-cell">' + fmtDate(p.created_at) + '</td>'
@@ -176,7 +183,7 @@ function render() {
 document.querySelectorAll('thead th[data-col]').forEach(th => {
   th.addEventListener('click', () => {
     const col = th.dataset.col;
-    sortDir = (sortCol === col) ? -sortDir : 1;
+    sortDir = (sortCol === col) ? -sortDir : (col === 'discount' ? -1 : 1);
     sortCol = col;
     document.querySelectorAll('thead th').forEach(t => t.classList.remove('sort-asc','sort-desc'));
     th.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
@@ -192,20 +199,26 @@ async function loadAllProducts() {
     const r = await fetch('/api/products.json');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    RAW = (data.products || []).map(p => ({
-      id: p.id,
-      title: p.title,
-      handle: p.handle,
-      vendor: p.vendor,
-      product_type: p.product_type,
-      tags: typeof p.tags === 'string' ? p.tags.split(',').map(t => t.trim()).filter(Boolean) : (p.tags || []),
-      price: parseFloat(p.variants[0].price),
-      compare_at_price: p.variants[0].compare_at_price ? parseFloat(p.variants[0].compare_at_price) : null,
-      available: p.variants.some(v => v.available),
-      variant_count: p.variants.length,
-      image: p.images && p.images[0] ? p.images[0].src : null,
-      created_at: p.created_at
-    }));
+    RAW = (data.products || []).map(p => {
+      const price = parseFloat(p.variants[0].price);
+      const compareAt = p.variants[0].compare_at_price ? parseFloat(p.variants[0].compare_at_price) : null;
+      const discount = (compareAt && compareAt > price) ? Math.round((compareAt - price) / compareAt * 100) : 0;
+      return {
+        id: p.id,
+        title: p.title,
+        handle: p.handle,
+        vendor: p.vendor,
+        product_type: p.product_type,
+        tags: typeof p.tags === 'string' ? p.tags.split(',').map(t => t.trim()).filter(Boolean) : (p.tags || []),
+        price: price,
+        compare_at_price: compareAt,
+        discount: discount,
+        available: p.variants.some(v => v.available),
+        variant_count: p.variants.length,
+        image: p.images && p.images[0] ? p.images[0].src : null,
+        created_at: p.created_at
+      };
+    });
     document.getElementById('loading-wrap').style.display = 'none';
     document.getElementById('table-wrap').style.display = '';
     document.getElementById('main-controls').style.display = 'flex';
