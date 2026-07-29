@@ -1,0 +1,57 @@
+services:
+  dramfellows-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: dramfellows.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - dramfellows-internal
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.dramfellows.rule=Host(`dramfellows.linger.dev`)"
+      - "traefik.http.routers.dramfellows.entrypoints=websecure"
+      - "traefik.http.routers.dramfellows.tls.certresolver=leresolver"
+      - "traefik.http.services.dramfellows.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.dramfellows-http.rule=Host(`dramfellows.linger.dev`)"
+      - "traefik.http.routers.dramfellows-http.entrypoints=web"
+      - "traefik.http.routers.dramfellows-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  dramfellows-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: dramfellows.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - dramfellows-data:/data
+    networks:
+      - dramfellows-internal
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  proxy:
+    external: true
+  # Explicit subnet: the default Docker address pools are fully allocated
+  # (31 networks). New deployments must pick an unused 10.201.x.0/24.
+  dramfellows-internal:
+    ipam:
+      config:
+        - subnet: 10.201.0.0/24
+
+volumes:
+  dramfellows-data:

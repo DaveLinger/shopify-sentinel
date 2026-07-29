@@ -41,6 +41,7 @@ Both processes read all configuration from environment variables. The `server` a
 | ElCerritoLiquor | `docker-compose.elcerritoliquor.yml` | `elcerritoliquor.env` | `elcerritoliquor.linger.dev` |
 | LuekensLiquors | `docker-compose.luekensliquors.yml` | `luekensliquors.env` | `luekensliquors.linger.dev` |
 | OnyxAmber | `docker-compose.onyxamber.yml` | `onyxamber.env` | `onyxamber.linger.dev` |
+| DramFellows | `docker-compose.dramfellows.yml` | `dramfellows.env` | `dramfellows.linger.dev` |
 
 ### Deploy commands
 
@@ -52,6 +53,33 @@ scripts/down-all.sh         # stop all
 
 # Single deployment
 docker compose -f docker-compose.<name>.yml up -d --build
+```
+
+### Adding a new deployment: explicit subnet required
+
+Docker's default address pools (172.17–31.x /16s + 192.168.x /20s) are fully
+subnetted by the existing networks — `up` on a new deployment fails with
+`all predefined address pools have been fully subnetted`. Every new
+deployment's internal network needs an explicit subnet in its compose file:
+
+```yaml
+networks:
+  proxy:
+    external: true
+  <name>-internal:
+    ipam:
+      config:
+        - subnet: 10.201.N.0/24   # next unused N; dramfellows took 10.201.0.0/24
+```
+
+Check what's taken with:
+`grep -h "subnet: 10.201" docker-compose.*.yml`
+
+Permanent fix (not yet applied; needs sudo and briefly restarts every container):
+
+```bash
+sudo tee /etc/docker/daemon.json <<< '{"default-address-pools":[{"base":"10.201.0.0/16","size":24}]}'
+sudo systemctl restart docker
 ```
 
 ## Configuration variables
