@@ -621,14 +621,31 @@ async function check() {
   }
 }
 
-// Run immediately, then pick a random offset (1–15 min) before settling into the fixed interval.
-// This prevents all deployments from polling Shopify in lockstep when relaunched together.
-const jitterMs = Math.floor(Math.random() * 15 * 60 * 1000) + 60 * 1000;
-check();
-setTimeout(() => {
-  check();
-  setInterval(check, INTERVAL_MS);
-}, jitterMs);
+// Spread the *first* check across a random window before settling into the
+// fixed interval. The 1–15 min jitter below only desynchronises the ongoing
+// cadence — the initial check used to fire immediately in every deployment, so
+// relaunching the fleet sent ~160 requests out of a single exit IP at once,
+// which is exactly the pattern that gets an IP rate-limited.
+const STARTUP_STAGGER_MS = parseInt(process.env.STARTUP_STAGGER_MS || String(60 * 1000), 10);
+const staggerMs = Math.floor(Math.random() * STARTUP_STAGGER_MS);
 
-console.log('[' + timestamp() + '] Watcher started. Next check in ~' + Math.round(jitterMs / 60000) + ' min, then every ' + (INTERVAL_MS / 60000) + ' min.');
+// Random offset (1–15 min) between the first and second check; this anchors the
+// fixed interval so deployments stay out of lockstep long-term.
+const jitterMs = Math.floor(Math.random() * 15 * 60 * 1000) + 60 * 1000;
+
+console.log('[' + timestamp() + '] Watcher started. First check in ~' + Math.round(staggerMs / 1000) +
+  's, then ~' + Math.round(jitterMs / 60000) + ' min, then every ' + (INTERVAL_MS / 60000) + ' min.');
 console.log('[' + timestamp() + '] Shopify egress: ' + egress.describe());
+
+(async () => {
+  // Wait for the sidecar before the first fetch, so a cold start after a host
+  // reboot doesn't silently fall back to the throttled direct connection.
+  await egress.waitForProxy();
+  if (staggerMs > 0) await sleep(staggerMs);
+
+  await check();
+  setTimeout(() => {
+    check();
+    setInterval(check, INTERVAL_MS);
+  }, jitterMs);
+})();

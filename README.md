@@ -81,6 +81,8 @@ docker compose -f docker-compose.<name>.yml down
 | `DISCORD_URL` | *(disabled)* | Discord webhook URL. Leave blank to run without alerts. |
 | `EGRESS_PROXY` | *(direct)* | SOCKS5 proxy for Shopify-bound requests, e.g. `socks5h://shopify-egress:1055`. See [Egress routing](#egress-routing). |
 | `EGRESS_FALLBACK` | `true` | Retry on the direct connection when the proxy is unreachable. Set to `false` to fail instead. |
+| `EGRESS_WAIT_MS` | `90000` | How long to wait at startup for the proxy to be routing before giving up and proceeding direct. See [Startup behaviour](#startup-behaviour). |
+| `STARTUP_STAGGER_MS` | `60000` | Random 0–N ms delay before a watcher's first check, to spread a fleet restart. `0` disables. |
 
 ## API
 
@@ -165,6 +167,30 @@ scripts/set-egress.sh on             # or: scripts/set-egress.sh on <store>...
 Verify any deployment's egress with `node egress-selftest.js`, which reports the
 observed exit IP and per-store results.
 
-## Jittered polling
+## Startup behaviour
 
-On startup, each watcher checks immediately, then waits a random 1–15 minutes before the second check, which anchors all subsequent 15-minute polls. This prevents all deployments from hammering Shopify in lockstep when relaunched together via `up-all.sh`.
+Three mechanisms keep a fleet restart from stampeding the upstream store — worth
+understanding together, since they cover different windows:
+
+**Startup stagger** (`STARTUP_STAGGER_MS`, default 60000). Each watcher waits a
+random 0–60s before its *first* check. Without this every deployment fetches the
+instant it boots: across a 28-store fleet that is ~160 requests leaving a single
+exit IP simultaneously, which is exactly the pattern that gets an IP throttled.
+Set to `0` to check immediately.
+
+**Poll jitter.** After the first check, each watcher waits a random 1–15 minutes
+before the second, which anchors all subsequent 15-minute polls and keeps
+deployments out of lockstep long-term.
+
+**Proxy readiness** (`EGRESS_WAIT_MS`, default 90000). When `EGRESS_PROXY` is
+set, both processes wait for the proxy to be genuinely routing before their first
+fetch — a TCP probe on the SOCKS port *and* a real request through it, because
+the listener binds before the tunnel finishes connecting. Compose's `depends_on`
+cannot express this: it only references services in the same compose file, and
+the proxy sidecar lives in its own. Without the wait, a host reboot races the
+sidecar, and the fallback silently drops the fleet onto the throttled direct
+connection during cold start — the worst possible moment. On timeout it proceeds
+direct rather than failing.
+
+The server fetches lazily on first request rather than at boot, so it adds
+nothing to the startup burst; its first fetch awaits the same readiness check.

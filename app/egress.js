@@ -15,8 +15,13 @@
 //   EGRESS_PROXY    socks5h://host:port  (empty/unset = direct, current behaviour)
 //   EGRESS_FALLBACK 'false' to disable the direct fallback (default: enabled)
 
+const net = require('net');
+const https = require('https');
+
 const EGRESS_PROXY = (process.env.EGRESS_PROXY || '').trim();
 const EGRESS_FALLBACK = process.env.EGRESS_FALLBACK !== 'false';
+// How long to wait at startup for the proxy sidecar to become usable.
+const EGRESS_WAIT_MS = parseInt(process.env.EGRESS_WAIT_MS || String(90 * 1000), 10);
 
 // TLS options applied to every Shopify-bound request.
 //
@@ -105,6 +110,74 @@ async function viaEgress(makeRequest, label) {
   }
 }
 
+// TCP-connect to the SOCKS port. Confirms the sidecar is listening, but not
+// that its exit node is up — hence the functional probe below.
+function probeListener(timeoutMs) {
+  return new Promise(resolve => {
+    let host, port;
+    try {
+      const u = new URL(EGRESS_PROXY);
+      host = u.hostname;
+      port = Number(u.port) || 1080;
+    } catch (err) { return resolve(false); }
+    const sock = net.connect({ host, port });
+    const done = ok => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(timeoutMs, () => done(false));
+    sock.on('connect', () => done(true));
+    sock.on('error', () => done(false));
+  });
+}
+
+// Fetch a tiny non-Shopify endpoint through the tunnel. This is what proves the
+// exit node is actually routing — the SOCKS listener comes up before tailscaled
+// finishes connecting, so a TCP probe alone would let us start too early.
+function probeRoute(timeoutMs) {
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: 'api.ipify.org', path: '/', method: 'GET',
+      agent: proxyAgent, ...TLS_OPTIONS
+    }, res => { res.resume(); resolve(res.statusCode === 200); });
+    req.on('error', () => resolve(false));
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(false); });
+    req.end();
+  });
+}
+
+/**
+ * Blocks until the proxy is usable, or `EGRESS_WAIT_MS` elapses.
+ *
+ * Needed because `depends_on` cannot reference a service in another compose
+ * file, so on a host reboot a store can start before the sidecar has connected.
+ * Without this the first fetches fail the tunnel, silently fall back to the
+ * throttled direct connection, and hit the 429 wall during cold start.
+ *
+ * Always resolves — never throws. Timing out just means starting on the direct
+ * path, which is the pre-existing behaviour.
+ *
+ * The deadline is checked before each attempt, so the actual wait can overshoot
+ * `EGRESS_WAIT_MS` by up to one probe cycle (~12s: 2s listener + 10s route).
+ */
+async function waitForProxy() {
+  if (!proxyAgent) return true;
+  const start = Date.now();
+  let delay = 1000;
+  let waited = false;
+  while (Date.now() - start < EGRESS_WAIT_MS) {
+    if (await probeListener(2000) && await probeRoute(10000)) {
+      if (waited) {
+        console.log('[egress] proxy ready after ' + Math.round((Date.now() - start) / 1000) + 's');
+      }
+      return true;
+    }
+    waited = true;
+    await new Promise(r => setTimeout(r, delay));
+    delay = Math.min(Math.round(delay * 1.5), 10000);
+  }
+  console.warn('[egress] proxy not ready after ' + Math.round(EGRESS_WAIT_MS / 1000) +
+    's — starting anyway; requests will fall back to the direct connection');
+  return false;
+}
+
 function describe() {
   if (!EGRESS_PROXY) return 'direct (no EGRESS_PROXY set)';
   if (!proxyAgent) return 'direct (EGRESS_PROXY set but agent unavailable)';
@@ -115,4 +188,4 @@ function stats() {
   return { proxy: EGRESS_PROXY || null, active: !!proxyAgent, fallbacks: fallbackCount };
 }
 
-module.exports = { viaEgress, describe, stats, isTunnelFailure, TLS_OPTIONS };
+module.exports = { viaEgress, describe, stats, isTunnelFailure, waitForProxy, TLS_OPTIONS };

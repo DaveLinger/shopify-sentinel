@@ -223,10 +223,17 @@ async function fetchAllProducts() {
   });
 }
 
+// Started at boot, awaited before the first fetch. The server listens
+// immediately and fetches lazily, so this delays only the first cache fill —
+// which is exactly the request that would otherwise race the sidecar on a
+// host reboot and silently degrade to the direct connection.
+const egressReady = egress.waitForProxy();
+
 async function refreshCache() {
   if (cache.fetching) return;
   cache.fetching = true;
   try {
+    await egressReady;
     const products = await fetchAllProducts();
     cache.products = products;
     cache.fetchedAt = Date.now();
