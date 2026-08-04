@@ -42,6 +42,7 @@ Both processes read all configuration from environment variables. The `server` a
 | LuekensLiquors | `docker-compose.luekensliquors.yml` | `luekensliquors.env` | `luekensliquors.linger.dev` |
 | OnyxAmber | `docker-compose.onyxamber.yml` | `onyxamber.env` | `onyxamber.linger.dev` |
 | DramFellows | `docker-compose.dramfellows.yml` | `dramfellows.env` | `dramfellows.linger.dev` |
+| DramCellars | `docker-compose.dramcellars.yml` | `dramcellars.env` | `dramcellars.linger.dev` |
 
 ### Deploy commands
 
@@ -74,6 +75,15 @@ networks:
 
 Check what's taken with:
 `grep -h "subnet: 10.201" docker-compose.*.yml`
+
+Taken so far: `10.201.0.0/24` dramfellows, `10.201.1.0/24` shopify-egress
+(created out-of-band), `10.201.2.0/24` dramcellars.
+
+**Silent-failure warning:** a collection handle that doesn't exist returns
+HTTP 200 with an empty `products` array, not a 404 — so a typo'd or renamed
+collection looks like an empty store forever. DarkArtsWhiskey sat at 0 products
+this way until 2026-08-04. Verify a new store's handles against
+`https://<host>/collections.json` before deploying.
 
 Permanent fix (not yet applied; needs sudo and briefly restarts every container):
 
@@ -109,6 +119,8 @@ sudo systemctl restart docker
 | `DEFAULT_AVAIL_FILTER` | `` (all) | Pre-select availability filter (`true` = In Stock) |
 | `DISCORD_URL` | `` (disabled) | Discord webhook URL |
 | `CHECK_PRODUCT_VISIBILITY` | `false` | When `true`, the watcher checks each newly-seen product's page for a passcode-only Locksmith lock and suppresses alerts for protected products. Enabled for WhiskeyBlendery and BourbonDirect. |
+| `EGRESS_PROXY` | `` (direct) | SOCKS5 proxy for Shopify-bound requests, e.g. `socks5h://shopify-egress:1055`. Unset = direct connection. See "Egress and rate limiting" below. |
+| `EGRESS_FALLBACK` | `true` | When the tunnel is unreachable, retry the request on the direct connection. Set to `false` to fail instead. |
 
 ## Server
 
@@ -146,6 +158,83 @@ When `SHOPIFY_STOREFRONT_TOKEN` is set:
 - `PRODUCT_TYPE_FILTER` should be used to scope results (e.g. `Bourbon,Bourbon Whiskey`) since the Storefront API returns the full catalog
 
 The Storefront Access Token is a public token visible in the store's HTML (look for `ShopifyBuy.buildClient({ storefrontAccessToken: '...' })`). BigThirst is currently the only deployment using this method.
+
+## Egress and rate limiting
+
+Shopify's edge limiter returns `HTTP 429 local_rate_limited`. Two independent
+factors drive it, measured 2026-08-04:
+
+**1. Exit IP.** The VPS egress (`23.94.99.234`, a ColoCrossing range with poor
+reputation) is throttled fleet-wide. Measured on interleaved samples across 8
+stores: **8/24 success direct vs 24/24 through a residential Tailscale exit
+node**. Volume is not the cause — the whole fleet issues only ~80 requests per
+15-minute cycle. Stores we have never polled are throttled identically, and the
+same stores answer other networks fine.
+
+**2. TLS fingerprint.** Node's default ClientHello (52 ciphers, no ALPN —
+JA4 `t13d521100`) is fingerprinted and throttled far harder than curl's
+(30 ciphers with ALPN — `t13d3012h2`). Through the *same* exit IP, User-Agent
+and HTTP version: **0/5 success without ALPN, 5/5 with**. `egress.TLS_OPTIONS`
+sets `ALPNProtocols: ['http/1.1']` on every Shopify request to fix this.
+
+Neither alone is sufficient — the fingerprint fix on the direct IP still only
+reaches ~25%. Both together give a clean 18/18.
+
+### How it works
+
+`app/egress.js` owns this. Shopify-bound requests (`fetchPage`, `postGraphQL`,
+`isProductPagePublic`) go through `viaEgress()`, which attaches the SOCKS5 agent
+and, on a *connection-level* failure, retries once on the direct connection.
+HTTP-level failures (429, 404, parse errors) deliberately do **not** trigger the
+fallback — a 429 through the tunnel is a real rate limit, and retrying direct
+would only burn the worse IP's budget. Discord webhooks and internal cache
+invalidation always go direct.
+
+The tunnel is never a hard dependency: if the sidecar is down, or
+`socks-proxy-agent` is missing, or `EGRESS_PROXY` is malformed, the fleet
+degrades to direct rather than going blind.
+
+Verify any deployment's egress with:
+
+```bash
+docker run --rm --network shopify-egress \
+  -e EGRESS_PROXY=socks5h://shopify-egress:1055 \
+  shopify-catalog-test node egress-selftest.js
+```
+
+### Tailscale sidecar
+
+`docker-compose.egress.yml` runs a Tailscale container exposing SOCKS5 on 1055,
+pinned to one exit node. **One tailscaled holds exactly one exit node**, so
+per-store exit-node choice means one sidecar per exit node — copy the service
+block with a new name, port, `TS_HOSTNAME` and `TS_EXTRA_ARGS`, then point
+stores at it individually via `EGRESS_PROXY`.
+
+The fleet exit node is **dad-truenas-scale** (`100.115.249.118`) — verified 24/24 on 2026-08-04.
+`home-truenas-scale` (`100.91.141.83`) also tests clean but is already in use
+by ytdl; avoid sharing it. Confirm which node is active with
+`docker exec shopify-catalog-shopify-egress-1 tailscale status`; the selftest
+prints the resulting egress IP.
+
+Setup:
+
+```bash
+docker network create --subnet 10.201.1.0/24 shopify-egress   # already created
+cp egress.env.example egress.env    # add TS_AUTHKEY (exit node is preset)
+docker compose -f docker-compose.egress.yml up -d
+scripts/set-egress.sh on            # point all 27 stores at the sidecar
+scripts/up-all.sh --build
+```
+
+`scripts/set-egress.sh {on|off|status} [store ...]` manages `EGRESS_PROXY`
+across store env files, so individual stores can be moved between the tunnel and
+the direct path (or onto a second sidecar) without hand-editing.
+
+All store compose files already join `shopify-egress` (via
+`scripts/add-egress-network.sh`); membership alone is inert — a store only uses
+the tunnel once `EGRESS_PROXY` is set in its env file. Setting `EGRESS_PROXY`
+while the sidecar is down is safe but pointless: every request fails the tunnel
+and falls back to direct, just with added latency.
 
 ## Known limitations
 

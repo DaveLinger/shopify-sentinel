@@ -1,0 +1,41 @@
+# Shared SOCKS5 egress for the catalog fleet.
+#
+# One tailscaled holds exactly one exit node, so per-store exit-node choice means
+# one sidecar per exit node. This file defines the first; to add a second, copy
+# the service block with a new name, port, TS_HOSTNAME and TS_EXIT_NODE, then
+# point individual stores at it via EGRESS_PROXY in their env file.
+#
+# The `shopify-egress` network is created out-of-band (Docker's default address
+# pools are exhausted, so it needs an explicit subnet):
+#
+#   docker network create --subnet 10.201.1.0/24 shopify-egress
+#
+# Stores that set EGRESS_PROXY must join this network; stores that leave it unset
+# keep using the direct connection.
+
+services:
+  shopify-egress:
+    image: tailscale/tailscale:latest
+    restart: unless-stopped
+    # TS_AUTHKEY and TS_EXTRA_ARGS (the --exit-node flag) come from egress.env.
+    # They are not set here because compose would interpolate ${...} from a
+    # project-level .env, which this project does not use.
+    env_file: egress.env
+    environment:
+      - TS_HOSTNAME=shopify-catalog-vps
+      - TS_SOCKS5_SERVER=0.0.0.0:1055
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true
+    volumes:
+      - shopify-egress-state:/var/lib/tailscale
+    networks:
+      - shopify-egress
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  shopify-egress:
+    external: true
+
+volumes:
+  shopify-egress-state:

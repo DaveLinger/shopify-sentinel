@@ -35,6 +35,11 @@ HEADER_TITLE=MyStore Catalog
 docker compose -f docker-compose.mystore.yml up -d --build
 ```
 
+> **Verify collection handles first.** A collection path that doesn't exist
+> returns HTTP 200 with an empty `products` array — not a 404 — so a typo'd or
+> renamed collection looks like a permanently empty store. Check handles against
+> `https://<host>/collections.json` before deploying.
+
 ## Managing deployments
 
 ```bash
@@ -74,6 +79,8 @@ docker compose -f docker-compose.<name>.yml down
 | `SHOW_TYPE_COLUMN` | `true` | Show/hide the Type column and filter in the UI. |
 | `DEFAULT_AVAIL_FILTER` | *(all)* | Set to `true` to pre-select the In Stock filter on load. |
 | `DISCORD_URL` | *(disabled)* | Discord webhook URL. Leave blank to run without alerts. |
+| `EGRESS_PROXY` | *(direct)* | SOCKS5 proxy for Shopify-bound requests, e.g. `socks5h://shopify-egress:1055`. See [Egress routing](#egress-routing). |
+| `EGRESS_FALLBACK` | `true` | Retry on the direct connection when the proxy is unreachable. Set to `false` to fail instead. |
 
 ## API
 
@@ -106,6 +113,57 @@ Fully standalone — the only outputs are the catalog HTTP API and Discord webho
 ## Storefront API (Buy Button products)
 
 Some Shopify stores sell products via embedded Buy Buttons published only to the Buy Button sales channel — these are invisible to REST collection endpoints. Set `SHOPIFY_STOREFRONT_TOKEN` to use the GraphQL Storefront API instead. The access token is public and visible in the store's page HTML (look for `ShopifyBuy.buildClient({ storefrontAccessToken: '...' })`).
+
+## Egress routing
+
+Shopify's edge limiter returns `HTTP 429 local_rate_limited`. Two independent
+factors drive it, and request volume is usually not one of them — a fleet issuing
+well under a hundred requests per polling cycle can still be throttled almost
+continuously.
+
+**Exit IP reputation.** Many datacenter and VPS ranges are throttled regardless
+of how little traffic they send. Stores that refuse one host will answer another
+from the same second. Routing through a residential exit node resolves it: on
+interleaved samples across 8 stores, this project measured **8/24 success from a
+VPS range vs 24/24 through a residential exit node**.
+
+**TLS fingerprint.** Node's default ClientHello (52 ciphers, no ALPN — JA4
+`t13d521100`) is fingerprinted and throttled far more aggressively than curl's
+(30 ciphers with ALPN — `t13d3012h2`). Holding exit IP, User-Agent and HTTP
+version constant, this was **0/5 success without ALPN and 5/5 with**. The fix is
+in `egress.js`: `ALPNProtocols: ['http/1.1']` on every Shopify request, applied
+unconditionally.
+
+Neither alone is sufficient — the fingerprint fix on a throttled IP still only
+reached ~25%.
+
+### How it works
+
+Set `EGRESS_PROXY` to a SOCKS5 endpoint and Shopify-bound requests route through
+it. On a **connection-level** failure the request is retried once on the direct
+connection; HTTP-level failures (429, 404, parse errors) deliberately do *not*
+fall back, since a 429 through the proxy is a real rate limit and retrying direct
+only burns the worse IP's budget. Discord webhooks and internal cache
+invalidation always go direct.
+
+The proxy is never a hard dependency: if it is down, unset, or misconfigured, or
+if `socks-proxy-agent` is unavailable, the deployment degrades to direct rather
+than failing.
+
+`docker-compose.egress.yml` provides a [Tailscale](https://tailscale.com/)
+sidecar exposing SOCKS5, pinned to one exit node. One `tailscaled` holds exactly
+one exit node, so routing different stores through different nodes means running
+one sidecar per node and pointing stores at them individually.
+
+```bash
+docker network create --subnet 10.201.1.0/24 shopify-egress
+cp egress.env.example egress.env     # add TS_AUTHKEY and the exit node
+docker compose -f docker-compose.egress.yml up -d
+scripts/set-egress.sh on             # or: scripts/set-egress.sh on <store>...
+```
+
+Verify any deployment's egress with `node egress-selftest.js`, which reports the
+observed exit IP and per-store results.
 
 ## Jittered polling
 

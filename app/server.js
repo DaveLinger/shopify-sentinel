@@ -10,6 +10,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const egress = require('./egress');
 
 const PORT = process.env.PORT || 3000;
 const SHOPIFY_HOST = process.env.SHOPIFY_HOST;
@@ -46,12 +47,14 @@ const indexHtml = Buffer.from(htmlTemplate.replace('<!-- CONFIG -->', configScri
 
 const cache = { products: null, fetchedAt: 0, fetching: false };
 
-function fetchPage(collectionPath, pageNum) {
+function fetchPage(collectionPath, pageNum, agent) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname: SHOPIFY_HOST,
       path: collectionPath + (collectionPath.includes('?') ? '&' : '?') + 'limit=250&page=' + pageNum,
       method: 'GET',
+      agent,
+      ...egress.TLS_OPTIONS,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; catalog-proxy/1.0)',
         'Accept': 'application/json'
@@ -69,7 +72,11 @@ function fetchPage(collectionPath, pageNum) {
         catch (e) { reject(new Error('JSON parse error on page ' + pageNum + ' of ' + collectionPath)); }
       });
     });
-    req.on('error', reject);
+    req.on('error', err => {
+      const e = new Error('Fetch error on ' + collectionPath + ': ' + err.message);
+      e.egressCode = err.code; // preserve for tunnel-failure detection
+      reject(e);
+    });
     req.setTimeout(30000, () => req.destroy(new Error('Request timed out after 30s')));
     req.end();
   });
@@ -81,7 +88,10 @@ async function fetchPageWithRetry(collectionPath, pageNum) {
   const delays = [10000, 30000]; // retry after 10s, then 30s
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fetchPage(collectionPath, pageNum);
+      return await egress.viaEgress(
+        agent => fetchPage(collectionPath, pageNum, agent),
+        collectionPath
+      );
     } catch (err) {
       if (err.message.includes('HTTP 429') && attempt < delays.length) {
         console.warn('[cache] Rate limited (429), retrying in ' + delays[attempt] / 1000 + 's...');
@@ -108,12 +118,18 @@ async function fetchAllFromPath(collectionPath) {
 }
 
 function postGraphQL(query, variables) {
+  return egress.viaEgress(agent => postGraphQLOnce(query, variables, agent), 'graphql');
+}
+
+function postGraphQLOnce(query, variables, agent) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ query, variables });
     const options = {
       hostname: SHOPIFY_HOST,
       path: '/api/2023-10/graphql.json',
       method: 'POST',
+      agent,
+      ...egress.TLS_OPTIONS,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
@@ -287,4 +303,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log((UI_CONFIG.headerTitle || 'Catalog') + ' running at http://localhost:' + PORT);
+  console.log('[egress] Shopify egress: ' + egress.describe());
 });

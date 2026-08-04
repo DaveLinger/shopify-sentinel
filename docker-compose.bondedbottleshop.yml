@@ -9,6 +9,7 @@ services:
     networks:
       - proxy
       - bondedbottleshop-internal
+      - shopify-egress
     labels:
       - "traefik.enable=true"
 
@@ -40,10 +41,13 @@ services:
       - bondedbottleshop-data:/data
     networks:
       - bondedbottleshop-internal
+      - shopify-egress
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
 
 networks:
+  shopify-egress:
+    external: true
   proxy:
     external: true
   bondedbottleshop-internal:

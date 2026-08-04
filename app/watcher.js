@@ -10,6 +10,7 @@
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
+const egress = require('./egress');
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -43,12 +44,14 @@ if (!SHOPIFY_HOST) {
 }
 
 // Fetches all products from the Shopify API (handles pagination for one collection path)
-function fetchPage(collectionPath, page) {
+function fetchPage(collectionPath, page, agent) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname: SHOPIFY_HOST,
       path: collectionPath + (collectionPath.includes('?') ? '&' : '?') + 'limit=250&page=' + page,
       method: 'GET',
+      agent,
+      ...egress.TLS_OPTIONS,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; catalog-watcher/1.0)',
         'Accept': 'application/json'
@@ -66,7 +69,11 @@ function fetchPage(collectionPath, page) {
         catch (err) { reject(new Error('Failed to parse response from ' + collectionPath + ': ' + err.message)); }
       });
     });
-    req.on('error', err => reject(new Error('Fetch error on ' + collectionPath + ': ' + err.message)));
+    req.on('error', err => {
+      const e = new Error('Fetch error on ' + collectionPath + ': ' + err.message);
+      e.egressCode = err.code; // preserve for tunnel-failure detection
+      reject(e);
+    });
     req.setTimeout(30000, () => req.destroy(new Error('Request timed out on ' + collectionPath)));
     req.end();
   });
@@ -78,7 +85,10 @@ async function fetchPageWithRetry(collectionPath, page) {
   const delays = [10000, 30000]; // retry after 10s, then 30s
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fetchPage(collectionPath, page);
+      return await egress.viaEgress(
+        agent => fetchPage(collectionPath, page, agent),
+        collectionPath
+      );
     } catch (err) {
       if (err.message.includes('HTTP 429') && attempt < delays.length) {
         console.warn('[' + timestamp() + '] Rate limited (429), retrying in ' + delays[attempt] / 1000 + 's...');
@@ -105,12 +115,18 @@ async function fetchAllFromPath(collectionPath) {
 }
 
 function postGraphQL(query, variables) {
+  return egress.viaEgress(agent => postGraphQLOnce(query, variables, agent), 'graphql');
+}
+
+function postGraphQLOnce(query, variables, agent) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ query, variables });
     const options = {
       hostname: SHOPIFY_HOST,
       path: '/api/2023-10/graphql.json',
       method: 'POST',
+      agent,
+      ...egress.TLS_OPTIONS,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
@@ -251,12 +267,24 @@ function sendDiscord(text) {
 // Returns false if the product page is passcode-gated by Locksmith (remote_lock:true, manual_lock:false).
 // Products with manual_lock:true are accessible to logged-in customers and are treated as public.
 // On any network error, timeout, or missing Locksmith data, returns true (assume public — don't suppress).
-function isProductPagePublic(handle) {
-  return new Promise((resolve) => {
+async function isProductPagePublic(handle) {
+  try {
+    return await egress.viaEgress(agent => isProductPagePublicOnce(handle, agent), 'product page');
+  } catch (err) {
+    return true; // network error/timeout on both paths — fail open, as documented above
+  }
+}
+
+// Rejects (rather than failing open) on connection-level errors so the egress
+// wrapper can retry direct; isProductPagePublic applies the fail-open policy.
+function isProductPagePublicOnce(handle, agent) {
+  return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: SHOPIFY_HOST,
       path: '/products/' + handle,
       method: 'GET',
+      agent,
+      ...egress.TLS_OPTIONS,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; catalog-watcher/1.0)' }
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400) {
@@ -279,8 +307,12 @@ function isProductPagePublic(handle) {
         } catch (e) { resolve(true); }
       });
     });
-    req.on('error', () => resolve(true));
-    req.setTimeout(10000, () => { req.destroy(); resolve(true); });
+    req.on('error', err => {
+      const e = new Error('Visibility check failed for ' + handle + ': ' + err.message);
+      e.egressCode = err.code;
+      reject(e);
+    });
+    req.setTimeout(10000, () => { req.destroy(new Error('Visibility check timed out for ' + handle)); });
     req.end();
   });
 }
@@ -599,3 +631,4 @@ setTimeout(() => {
 }, jitterMs);
 
 console.log('[' + timestamp() + '] Watcher started. Next check in ~' + Math.round(jitterMs / 60000) + ' min, then every ' + (INTERVAL_MS / 60000) + ' min.');
+console.log('[' + timestamp() + '] Shopify egress: ' + egress.describe());
