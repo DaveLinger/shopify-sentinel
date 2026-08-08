@@ -43,6 +43,7 @@ Both processes read all configuration from environment variables. The `server` a
 | OnyxAmber | `docker-compose.onyxamber.yml` | `onyxamber.env` | `onyxamber.linger.dev` |
 | DramFellows | `docker-compose.dramfellows.yml` | `dramfellows.env` | `dramfellows.linger.dev` |
 | DramCellars | `docker-compose.dramcellars.yml` | `dramcellars.env` | `dramcellars.linger.dev` |
+| KingsCountyDistillery | `docker-compose.kingscountydistillery.yml` | `kingscountydistillery.env` | `kingscountydistillery.linger.dev` |
 
 ### Deploy commands
 
@@ -77,7 +78,8 @@ Check what's taken with:
 `grep -h "subnet: 10.201" docker-compose.*.yml`
 
 Taken so far: `10.201.0.0/24` dramfellows, `10.201.1.0/24` shopify-egress
-(created out-of-band), `10.201.2.0/24` dramcellars.
+(created out-of-band), `10.201.2.0/24` dramcellars,
+`10.201.3.0/24` kingscountydistillery.
 
 **Silent-failure warning:** a collection handle that doesn't exist returns
 HTTP 200 with an empty `products` array, not a 404 — so a typo'd or renamed
@@ -119,6 +121,7 @@ sudo systemctl restart docker
 | `DEFAULT_AVAIL_FILTER` | `` (all) | Pre-select availability filter (`true` = In Stock) |
 | `DISCORD_URL` | `` (disabled) | Discord webhook URL |
 | `CHECK_PRODUCT_VISIBILITY` | `false` | When `true`, the watcher checks each newly-seen product's page for a passcode-only Locksmith lock and suppresses alerts for protected products. Enabled for WhiskeyBlendery and BourbonDirect. |
+| `HEALTH_COLD_GRACE_MS` | `2700000` (45 min) | How long `/api/health` reports 200 with an unwarmed cache before calling it a failure |
 | `EGRESS_PROXY` | `` (direct) | SOCKS5 proxy for Shopify-bound requests, e.g. `socks5h://shopify-egress:1055`. Unset = direct connection. See "Egress and rate limiting" below. |
 | `EGRESS_FALLBACK` | `true` | When the tunnel is unreachable, retry the request on the direct connection. Set to `false` to fail instead. |
 | `EGRESS_WAIT_MS` | `90000` | Startup wait for the proxy to be routing before proceeding direct. Can overshoot by one probe cycle (~12s). |
@@ -132,6 +135,15 @@ sudo systemctl restart docker
 - `fetching` flag prevents concurrent refreshes
 - `POST /api/cache/invalidate` forces a full refresh and returns `{ ok, count }` when complete
 - `X-Cache: HIT | STALE | MISS` header on product responses
+- `GET /api/health` → `{ ok, starting?, count, cacheAgeSeconds, fetching }` — **liveness with no side effects**
+
+### Why /api/health exists (added 2026-08-08)
+
+`GET /api/products.json` answers from cache but starts a background Shopify refresh once the TTL has passed. That makes it the wrong thing to poll for liveness: health-watchdog checking all ~29 stores hourly was *causing* ~29 upstream fetches through the single egress tunnel at the same instant, which was the source of 49 of 60 sampled `tunnel unavailable … falling back to direct connection` warnings (all at `:26`, that pass's offset). The monitoring was manufacturing the anomalies the log digest then reported.
+
+`/api/health` reports the same liveness without touching Shopify, and is a *stronger* check: `cacheAgeSeconds` exposes a server that is up and answering but has silently stopped refreshing — indistinguishable from healthy via a 200 on the products endpoint.
+
+Status codes are deliberate: **200 while `starting`** (the cache fills lazily, so "not warm yet" is the normal state of a just-deployed server and must not alert on every `up-all.sh --build`), and **503 once past `HEALTH_COLD_GRACE_MS`** (default 45 min, comfortably longer than find-bot's 30-minute re-warm) with the cache still empty — by then something has certainly asked, so an empty cache means fetching is genuinely failing. That preserves the failure signal the old products-endpoint 503 provided.
 - UI config (`HEADER_TITLE`, `SHOW_TYPE_COLUMN`, etc.) is injected into `index.html` at startup as a `CONFIG` script block
 
 ## Watcher

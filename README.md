@@ -29,6 +29,23 @@ HEADER_TITLE=MyStore Catalog
 
 2. Copy an existing `docker-compose.<name>.yml` to `docker-compose.mystore.yml` and replace the store name, env file reference, and Traefik hostname throughout.
 
+> **Give the internal network an explicit subnet** once you have enough
+> deployments to exhaust Docker's default address pools (172.17–31 `/16`s plus
+> 192.168.x `/20`s) — past that point `up` fails with `all predefined address
+> pools have been fully subnetted`. Add one to the new deployment's network:
+>
+> ```yaml
+> networks:
+>   mystore-internal:
+>     ipam:
+>       config:
+>         - subnet: 10.201.N.0/24   # next unused N
+> ```
+>
+> Check what's taken with `grep -h "subnet: 10.201" docker-compose.*.yml`.
+> The permanent fix is a `default-address-pools` entry in
+> `/etc/docker/daemon.json`, which needs sudo and restarts every container.
+
 3. Start it:
 
 ```bash
@@ -88,10 +105,15 @@ docker compose -f docker-compose.<name>.yml down
 
 ```
 GET  /api/products.json      → { products: [...] }
+GET  /api/health             → { ok, starting?, count, cacheAgeSeconds, fetching }
 POST /api/cache/invalidate   → { ok, count }
 ```
 
 Response header `X-Cache: HIT | STALE | MISS` indicates whether the response was served from cache.
+
+**Monitor `/api/health`, not `/api/products.json`.** The products endpoint serves from cache but starts a background Shopify refresh once the TTL has passed, so polling it for liveness *causes* upstream fetches — a monitor checking every store hourly will generate one refresh per store per check. `/api/health` reports the same liveness with no side effects, and tells you more: `cacheAgeSeconds` reveals a server that is up and answering but has silently stopped refreshing, which a 200 from the products endpoint looks identical to.
+
+It returns 200 while `starting` (the cache fills lazily, so an unwarmed cache is normal for a freshly deployed server and shouldn't alert), and 503 once past `HEALTH_COLD_GRACE_MS` (default 45 min) with the cache still empty.
 
 ## Watcher alerts
 

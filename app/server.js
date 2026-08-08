@@ -24,6 +24,9 @@ const PRODUCT_TYPE_FILTER = process.env.PRODUCT_TYPE_FILTER
   : null;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN || '';
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Grace before /api/health calls an unwarmed cache a failure. Comfortably longer
+// than find-bot's 30-minute re-warm, so every server has been asked at least once.
+const HEALTH_COLD_GRACE_MS = parseInt(process.env.HEALTH_COLD_GRACE_MS || String(45 * 60 * 1000), 10);
 
 if (!SHOPIFY_HOST) {
   console.error('SHOPIFY_HOST environment variable is required');
@@ -284,6 +287,38 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/api/products.json') {
     serveProducts(res);
+    return;
+  }
+
+  // Liveness without side effects. GET /api/products.json answers from cache but
+  // kicks off a background Shopify refresh when the TTL has passed — so a monitor
+  // polling it hourly was *causing* upstream fetches (and, fleet-wide at the same
+  // instant, bursts through the egress tunnel) purely by asking whether we were
+  // alive. This reports the same thing without touching Shopify.
+  //
+  // It is also a stronger check than the products endpoint: cacheAgeSeconds
+  // exposes a server that is up and answering but whose cache stopped
+  // refreshing, which a 200 from /api/products.json looks identical to.
+  // The cache fills lazily on the first request, so "not warm yet" is the normal
+  // state of a just-deployed server and must not read as broken — otherwise
+  // every `up-all.sh --build` would alert. Past the grace window something has
+  // asked (find-bot warms every 30 min), so a still-empty cache means fetching
+  // is genuinely failing, which is the condition the old products-endpoint check
+  // caught via its 503 and which we must not lose.
+  if (pathname === '/api/health') {
+    const warm = Boolean(cache.products);
+    const starting = !warm && process.uptime() * 1000 < HEALTH_COLD_GRACE_MS;
+    res.writeHead(warm || starting ? 200 : 503, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify({
+      ok: warm,
+      starting: starting || undefined,
+      count: warm ? cache.products.length : 0,
+      cacheAgeSeconds: cache.fetchedAt ? Math.round((Date.now() - cache.fetchedAt) / 1000) : null,
+      fetching: cache.fetching,
+    }));
     return;
   }
 
