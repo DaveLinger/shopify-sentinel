@@ -1,0 +1,62 @@
+services:
+  kingscountydistillery-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: kingscountydistillery.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - kingscountydistillery-internal
+      - shopify-egress
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.kingscountydistillery.rule=Host(`kingscountydistillery.linger.dev`)"
+      - "traefik.http.routers.kingscountydistillery.entrypoints=websecure"
+      - "traefik.http.routers.kingscountydistillery.tls.certresolver=leresolver"
+      - "traefik.http.services.kingscountydistillery.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.kingscountydistillery-http.rule=Host(`kingscountydistillery.linger.dev`)"
+      - "traefik.http.routers.kingscountydistillery-http.entrypoints=web"
+      - "traefik.http.routers.kingscountydistillery-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  kingscountydistillery-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: kingscountydistillery.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - kingscountydistillery-data:/data
+    networks:
+      - kingscountydistillery-internal
+      - shopify-egress
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  shopify-egress:
+    external: true
+  proxy:
+    external: true
+  kingscountydistillery-internal:
+    ipam:
+      config:
+        # Docker's default address pools are exhausted — explicit subnet required.
+        # Taken: 10.201.0.0/24 dramfellows, 10.201.1.0/24 shopify-egress,
+        # 10.201.2.0/24 dramcellars.
+        - subnet: 10.201.3.0/24
+
+volumes:
+  kingscountydistillery-data:
