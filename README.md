@@ -7,7 +7,7 @@ Multi-deployment Shopify product catalog proxy with Discord alerts for new produ
 Each deployment runs two containers:
 
 - **server** — fetches and caches the store's full product catalog, serving it at `/api/products.json`. Stale-while-revalidate: cached data is served immediately; the cache refreshes in the background when the 10-minute TTL expires. Also serves a browsable product catalog UI at the root URL with in-stock filtering and search.
-- **watcher** — polls the Shopify API every ~15 minutes and posts Discord alerts when new products appear or prices drop by more than $4.99.
+- **watcher** — polls the Shopify API every ~15 minutes and posts Discord alerts when new products appear, prices drop by more than $4.99, or products come back in stock.
 
 ## Requirements
 
@@ -121,11 +121,11 @@ It returns 200 while `starting` (the cache fills lazily, so an unwarmed cache is
 |---|---|
 | New product | Product appears that wasn't in the previous fetch and was created within the last 24 hours. Out-of-stock listings are marked `❌ OUT OF STOCK` |
 | Price drop | `min(variants[].price)` decreases by more than $4.99 since the last check. Includes 30-day-low context ("lowest we've seen in 30 days at this retailer") from stored history |
-| Back in stock | A tracked product's availability flips false → true after being out of stock for at least 20 minutes (flap damping) — detected from the same poll data, no extra requests |
+| Back in stock | A tracked product's availability flips false → true after being out of stock for at least 20 minutes (flap damping) — detected from the same poll data, no extra requests. Also covers delist/relist stores: a product that vanished from the feed and later reappears counts as out of stock for the whole gap |
 
-Product removals are detected and removed from tracking silently (no Discord alert). Alerts longer than Discord's message limit are split into multiple webhook posts, each repeating the header.
+Product removals are detected and logged silently (no Discord alert). The entry is *tombstoned* rather than deleted, because some stores unpublish a product when it sells out instead of flagging it out of stock — it disappears from `/products.json` entirely. Deleting outright meant the eventual re-publish arrived as an ID the watcher had never seen, carrying its original `created_at` (often months old), so it failed the 24-hour new-product gate and never hit the availability transition either — no alert of any kind. Tombstones expire after 60 days. Alerts longer than Discord's message limit are split into multiple webhook posts, each repeating the header.
 
-Price history and availability are stored per product (history: one entry per calendar day, capped at 30) in a Docker named volume in `known_products.json`. State persists across restarts — no duplicate alerts, no false price-drop or restock alerts after a restart.
+Price history, availability, and removal state are stored per product (history: one entry per calendar day, capped at 30) in a Docker named volume in `known_products.json`. State persists across restarts — no duplicate alerts, no false price-drop or restock alerts after a restart.
 
 ## Works with (optional integrations)
 

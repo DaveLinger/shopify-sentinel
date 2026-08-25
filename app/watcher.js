@@ -33,6 +33,7 @@ const CHECK_PRODUCT_VISIBILITY  = process.env.CHECK_PRODUCT_VISIBILITY === 'true
 const INTERVAL_MS               = 15 * 60 * 1000; // 15 minutes
 const MIN_PRICE_DROP           = 4.99;           // only alert if drop exceeds this
 const RESTOCK_MIN_OOS_MS       = 20 * 60 * 1000; // must be out of stock this long before a restock alerts (flap damping)
+const TOMBSTONE_TTL_MS         = 60 * 24 * 60 * 60 * 1000; // how long a delisted product stays tombstoned (see removal handling)
 const STORE_PATH               = '/data/known_products.json';
 const LEGACY_STORE_PATH        = '/data/known_ids.json';
 
@@ -400,6 +401,7 @@ function loadKnownProducts() {
         if (val.protected) result[id].protected = true;
         if (typeof val.available === 'boolean') result[id].available = val.available;
         if (val.oosSince) result[id].oosSince = val.oosSince;
+        if (val.removedAt) result[id].removedAt = val.removedAt;
       }
     }
     return result;
@@ -415,6 +417,11 @@ function loadKnownProducts() {
     }
   } catch {}
   return {};
+}
+
+// Tombstoned entries are bookkeeping, not tracked products — keep them out of counts.
+function trackedCount(known) {
+  return Object.values(known).filter(e => !e.removedAt).length;
 }
 
 function saveKnownProducts(known) {
@@ -450,10 +457,22 @@ async function check() {
 
   // ── Detect removed products ───────────────────────────────────────────────
 
+  // Tombstoned, not deleted: stores that unpublish on sellout drop the product from
+  // the feed entirely. A bare delete made the eventual re-publish look like a product
+  // never seen before, whose created_at is months old — so it failed the 24h new-product
+  // gate and, being a fresh insert, never hit the availability transition either. Both
+  // alerts were silently skipped. Keeping the entry lets the return replay as a restock.
   for (const [id, entry] of Object.entries(knownProducts)) {
+    if (entry.removedAt) {
+      if (Date.now() - entry.removedAt > TOMBSTONE_TTL_MS) {
+        delete knownProducts[id];
+        changed = true;
+      }
+      continue;
+    }
     if (!fetchedIds.has(id)) {
       removedTitles.push(entry.title || ('Product #' + id));
-      delete knownProducts[id];
+      entry.removedAt = Date.now();
       changed = true;
     }
   }
@@ -481,6 +500,16 @@ async function check() {
     } else {
       const entry      = knownProducts[id];
       const knownPrice = entry.price;
+
+      // Re-published after a delisting. Feed it to the transition logic below as
+      // out-of-stock since the moment it vanished, so it alerts as Back in Stock and
+      // still gets the usual flap damping.
+      if (entry.removedAt) {
+        entry.available = false;
+        entry.oosSince  = entry.removedAt;
+        delete entry.removedAt;
+        changed = true;
+      }
 
       // Keep title current
       if (entry.title !== p.title) {
@@ -528,7 +557,7 @@ async function check() {
 
   if (isFirstRun) {
     isFirstRun = false;
-    console.log('[' + timestamp() + '] Initial load: ' + Object.keys(knownProducts).length + ' products found. Watching for new additions, price drops, and removals...');
+    console.log('[' + timestamp() + '] Initial load: ' + trackedCount(knownProducts) + ' products found. Watching for new additions, price drops, and removals...');
     return;
   }
 
@@ -617,7 +646,7 @@ async function check() {
   }
 
   if (newProducts.length === 0 && priceDrops.length === 0 && restocks.length === 0 && removedTitles.length === 0) {
-    console.log('[' + timestamp() + '] No changes. Total known: ' + Object.keys(knownProducts).length);
+    console.log('[' + timestamp() + '] No changes. Total known: ' + trackedCount(knownProducts));
   }
 }
 
