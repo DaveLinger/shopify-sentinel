@@ -1,0 +1,62 @@
+services:
+  preetliquor-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: preetliquor.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - preetliquor-internal
+      - shopify-egress
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.preetliquor.rule=Host(`preetliquor.linger.dev`)"
+      - "traefik.http.routers.preetliquor.entrypoints=websecure"
+      - "traefik.http.routers.preetliquor.tls.certresolver=leresolver"
+      - "traefik.http.services.preetliquor.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.preetliquor-http.rule=Host(`preetliquor.linger.dev`)"
+      - "traefik.http.routers.preetliquor-http.entrypoints=web"
+      - "traefik.http.routers.preetliquor-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  preetliquor-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: preetliquor.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - preetliquor-data:/data
+    networks:
+      - preetliquor-internal
+      - shopify-egress
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  shopify-egress:
+    external: true
+  proxy:
+    external: true
+  preetliquor-internal:
+    ipam:
+      config:
+        # Docker's default address pools are exhausted — explicit subnet required.
+        # Taken: 10.201.0.0/24 dramfellows, 10.201.1.0/24 shopify-egress,
+        # 10.201.2.0/24 dramcellars, 10.201.3.0/24 kingscountydistillery.
+        - subnet: 10.201.4.0/24
+
+volumes:
+  preetliquor-data:
