@@ -34,6 +34,7 @@ const INTERVAL_MS               = 15 * 60 * 1000; // 15 minutes
 const MIN_PRICE_DROP           = 4.99;           // only alert if drop exceeds this
 const RESTOCK_MIN_OOS_MS       = 20 * 60 * 1000; // must be out of stock this long before a restock alerts (flap damping)
 const TOMBSTONE_TTL_MS         = 60 * 24 * 60 * 60 * 1000; // how long a delisted product stays tombstoned (see removal handling)
+const BULK_INFLUX_LIMIT        = 25;             // unknown products in one poll above which we record silently instead of alerting
 const STORE_PATH               = '/data/known_products.json';
 const LEGACY_STORE_PATH        = '/data/known_ids.json';
 
@@ -479,18 +480,38 @@ async function check() {
 
   // ── Process current products ──────────────────────────────────────────────
 
+  // A populated store DB is itself the guard against backfill spam, so an unknown
+  // product alerts regardless of how old its created_at is (stores that unpublish on
+  // sellout re-publish with the original date). What that leaves exposed is a genuine
+  // bulk influx while the DB is populated — a widened collection/tag filter, a switch
+  // to the Storefront API's full catalog, or a truncated page that tombstoned half the
+  // store. Those arrive as a flood of unknown IDs, so cap on volume rather than date:
+  // above the limit, record everything silently and say so in the log.
+  const unknownCount = products.reduce((n, p) => n + (String(p.id) in knownProducts ? 0 : 1), 0);
+  const bulkInflux = !isFirstRun && unknownCount > BULK_INFLUX_LIMIT;
+  if (bulkInflux) {
+    console.warn('[' + timestamp() + '] ' + unknownCount + ' unknown products in one poll (limit ' +
+      BULK_INFLUX_LIMIT + ') — recording silently, no alerts. Check for a scope/filter change or a truncated fetch.');
+  }
+
   for (const p of products) {
     const id           = String(p.id);
     const currentPrice = minPrice(p);
     const nowAvail     = isProductAvailable(p);
 
     if (!(id in knownProducts)) {
-      // Never seen before — flag as new if created recently (and not first run)
+      // Never seen before. created_at no longer decides whether to alert, only which
+      // alert it is: recently created is genuinely new, anything older is a listing the
+      // store pulled and put back (delisted before we had a tombstone for it, or past the
+      // tombstone TTL). An old one that returns still out of stock says nothing worth
+      // hearing — record it and let the availability transition alert when it fills.
       let isProtected = false;
-      if (!isFirstRun && new Date(p.created_at).getTime() > oneDayAgo) {
+      const isBrandNew = new Date(p.created_at).getTime() > oneDayAgo;
+      if (!isFirstRun && !bulkInflux && (isBrandNew || nowAvail)) {
         const publiclyAccessible = CHECK_PRODUCT_VISIBILITY ? await isProductPagePublic(p.handle) : true;
-        if (publiclyAccessible) newProducts.push(p);
-        else { isProtected = true; console.log('[' + timestamp() + '] Skipping notification for protected product: ' + p.title); }
+        if (!publiclyAccessible) { isProtected = true; console.log('[' + timestamp() + '] Skipping notification for protected product: ' + p.title); }
+        else if (isBrandNew) newProducts.push(p);
+        else restocks.push({ product: p, price: currentPrice });
       }
       knownProducts[id] = { price: currentPrice, title: p.title, history: [], available: nowAvail };
       if (!nowAvail) knownProducts[id].oosSince = Date.now();
