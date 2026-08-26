@@ -35,6 +35,7 @@ const MIN_PRICE_DROP           = 4.99;           // only alert if drop exceeds t
 const RESTOCK_MIN_OOS_MS       = 20 * 60 * 1000; // must be out of stock this long before a restock alerts (flap damping)
 const TOMBSTONE_TTL_MS         = 60 * 24 * 60 * 60 * 1000; // how long a delisted product stays tombstoned (see removal handling)
 const BULK_INFLUX_LIMIT        = 25;             // unknown products in one poll above which we record silently instead of alerting
+const INSTOCK_RELIST_MIN_GONE_MS = 6 * 60 * 60 * 1000; // an in-stock product that vanishes and comes back in stock inside this window is a truncated fetch, not a relist
 const STORE_PATH               = '/data/known_products.json';
 const LEGACY_STORE_PATH        = '/data/known_ids.json';
 
@@ -454,6 +455,7 @@ async function check() {
   const priceDrops     = [];
   const restocks       = [];
   const removedTitles  = [];
+  const quietRelists   = [];
   let changed = false;
 
   // ── Detect removed products ───────────────────────────────────────────────
@@ -522,12 +524,25 @@ async function check() {
       const entry      = knownProducts[id];
       const knownPrice = entry.price;
 
-      // Re-published after a delisting. Feed it to the transition logic below as
-      // out-of-stock since the moment it vanished, so it alerts as Back in Stock and
-      // still gets the usual flap damping.
+      // Re-published after a delisting. A product that was in stock when it vanished
+      // and is in stock again now saw no stock transition at either end: on a big
+      // paginated store that is a short page, not a relist, and replaying it as a
+      // restock alerted on bottles that never sold out. So replay only when it was
+      // known out of stock when it went, or when it has been gone too long for a
+      // truncated fetch to explain (INSTOCK_RELIST_MIN_GONE_MS) — the latter covers
+      // stores that delist the instant they sell out, never publishing the
+      // out-of-stock state. Anything else adopts the current state silently.
       if (entry.removedAt) {
-        entry.available = false;
-        entry.oosSince  = entry.removedAt;
+        const goneMs = Date.now() - entry.removedAt;
+        if (entry.available !== true || goneMs > INSTOCK_RELIST_MIN_GONE_MS) {
+          entry.available = false;
+          entry.oosSince  = entry.removedAt;
+        } else {
+          quietRelists.push((entry.title || ('Product #' + id)) + ' (gone ' + Math.round(goneMs / 60000) + 'm)');
+          entry.available = nowAvail;
+          if (nowAvail) delete entry.oosSince;
+          else entry.oosSince = Date.now();
+        }
         delete entry.removedAt;
         changed = true;
       }
@@ -587,6 +602,13 @@ async function check() {
   if (removedTitles.length > 0) {
     const logMsg = removedTitles.length + ' product' + (removedTitles.length > 1 ? 's' : '') + ' removed from tracking: ' + removedTitles.join(', ');
     console.log('[' + timestamp() + '] ' + logMsg);
+  }
+
+  // ── Relists suppressed as feed noise (log only — no Discord alert) ────────
+
+  if (quietRelists.length > 0) {
+    console.log('[' + timestamp() + '] ' + quietRelists.length + ' product' + (quietRelists.length > 1 ? 's' : '') +
+      ' reappeared with no stock change — treated as a truncated fetch, no alert: ' + quietRelists.join(', '));
   }
 
   // ── New products ──────────────────────────────────────────────────────────
@@ -666,7 +688,8 @@ async function check() {
     }
   }
 
-  if (newProducts.length === 0 && priceDrops.length === 0 && restocks.length === 0 && removedTitles.length === 0) {
+  if (newProducts.length === 0 && priceDrops.length === 0 && restocks.length === 0 && removedTitles.length === 0 &&
+      quietRelists.length === 0) {
     console.log('[' + timestamp() + '] No changes. Total known: ' + trackedCount(knownProducts));
   }
 }
