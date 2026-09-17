@@ -22,6 +22,15 @@ const PRODUCT_TAG_FILTER = process.env.PRODUCT_TAG_FILTER
 const PRODUCT_TYPE_FILTER = process.env.PRODUCT_TYPE_FILTER
   ? new Set(process.env.PRODUCT_TYPE_FILTER.split(',').map(s => s.trim()).filter(Boolean))
   : null;
+// Denylist counterpart to PRODUCT_TYPE_FILTER, for stores where neither
+// collections nor an allowlist can scope the catalog — see TallacLiquors, whose
+// collections omit most of its allocated stock. Matched case-insensitively on the
+// trimmed value, because such stores hand-enter the field. A blank product_type is
+// never excluded: on exactly these stores the untyped items tend to be the
+// interesting ones (Tallac's blank set holds its Pappy and E.H. Taylor).
+const PRODUCT_TYPE_EXCLUDE = process.env.PRODUCT_TYPE_EXCLUDE
+  ? new Set(process.env.PRODUCT_TYPE_EXCLUDE.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+  : null;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN || '';
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // Grace before /api/health calls an unwarmed cache a failure. Comfortably longer
@@ -222,6 +231,7 @@ async function fetchAllProducts() {
       if (!tags.some(t => PRODUCT_TAG_FILTER.has(t))) return false;
     }
     if (PRODUCT_TYPE_FILTER && !PRODUCT_TYPE_FILTER.has(p.product_type)) return false;
+    if (PRODUCT_TYPE_EXCLUDE && PRODUCT_TYPE_EXCLUDE.has((p.product_type || '').trim().toLowerCase())) return false;
     return true;
   });
 }

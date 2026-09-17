@@ -28,6 +28,11 @@ const PRODUCT_TAG_FILTER       = process.env.PRODUCT_TAG_FILTER
 const PRODUCT_TYPE_FILTER      = process.env.PRODUCT_TYPE_FILTER
   ? new Set(process.env.PRODUCT_TYPE_FILTER.split(',').map(s => s.trim()).filter(Boolean))
   : null;
+// Denylist counterpart to PRODUCT_TYPE_FILTER — see server.js for the rationale.
+// Case-insensitive; a blank product_type is never excluded.
+const PRODUCT_TYPE_EXCLUDE     = process.env.PRODUCT_TYPE_EXCLUDE
+  ? new Set(process.env.PRODUCT_TYPE_EXCLUDE.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+  : null;
 const SHOPIFY_STOREFRONT_TOKEN  = process.env.SHOPIFY_STOREFRONT_TOKEN || '';
 const CHECK_PRODUCT_VISIBILITY  = process.env.CHECK_PRODUCT_VISIBILITY === 'true';
 const INTERVAL_MS               = 15 * 60 * 1000; // 15 minutes
@@ -220,6 +225,7 @@ async function fetchAllProducts() {
       if (!tags.some(t => PRODUCT_TAG_FILTER.has(t))) return false;
     }
     if (PRODUCT_TYPE_FILTER && !PRODUCT_TYPE_FILTER.has(p.product_type)) return false;
+    if (PRODUCT_TYPE_EXCLUDE && PRODUCT_TYPE_EXCLUDE.has((p.product_type || '').trim().toLowerCase())) return false;
     return true;
   });
 }

@@ -45,6 +45,8 @@ Both processes read all configuration from environment variables. The `server` a
 | DramCellars | `docker-compose.dramcellars.yml` | `dramcellars.env` | `dramcellars.linger.dev` |
 | KingsCountyDistillery | `docker-compose.kingscountydistillery.yml` | `kingscountydistillery.env` | `kingscountydistillery.linger.dev` |
 | PreetLiquor | `docker-compose.preetliquor.yml` | `preetliquor.env` | `preetliquor.linger.dev` |
+| TallacLiquors | `docker-compose.tallacliquors.yml` | `tallacliquors.env` | `tallacliquors.linger.dev` |
+| BIGBottleShop | `docker-compose.bigbottleshop.yml` | `bigbottleshop.env` | `bigbottleshop.linger.dev` |
 
 ### Deploy commands
 
@@ -80,7 +82,8 @@ Check what's taken with:
 
 Taken so far: `10.201.0.0/24` dramfellows, `10.201.1.0/24` shopify-egress
 (created out-of-band), `10.201.2.0/24` dramcellars,
-`10.201.3.0/24` kingscountydistillery, `10.201.4.0/24` preetliquor.
+`10.201.3.0/24` kingscountydistillery, `10.201.4.0/24` preetliquor,
+`10.201.5.0/24` tallacliquors, `10.201.6.0/24` bigbottleshop.
 
 **Silent-failure warning:** a collection handle that doesn't exist returns
 HTTP 200 with an empty `products` array, not a 404 — so a typo'd or renamed
@@ -111,6 +114,7 @@ sudo systemctl restart docker
 | `SHOPIFY_STOREFRONT_TOKEN` | `` (disabled) | Shopify Storefront API access token. When set, uses the GraphQL Storefront API instead of REST collection paths, enabling access to products published only to the Buy Button channel. Use with `PRODUCT_TYPE_FILTER` to scope results. |
 | `PRODUCT_TAG_FILTER` | `` (disabled) | Comma-separated list of Shopify tags; when set, only products with at least one matching tag are served |
 | `PRODUCT_TYPE_FILTER` | `` (disabled) | Comma-separated list of `product_type` values; when set, only products with a matching type are served |
+| `PRODUCT_TYPE_EXCLUDE` | `` (disabled) | Comma-separated `product_type` values to **drop** — the denylist counterpart to `PRODUCT_TYPE_FILTER`, for stores where neither collections nor an allowlist can scope the catalog. Matched case-insensitively on the trimmed value, since such stores hand-enter the field. **A blank `product_type` is never excluded** — on these stores the untyped items are often the notable ones. Used by TallacLiquors. |
 | `PRODUCT_URL_BASE` | `https://{SHOPIFY_HOST}/products/` | Base URL for product links |
 | `PROJECT_NAME` | `Catalog` | Used in notification titles |
 | `SERVER_HOSTNAME` | `localhost` | Watcher → server hostname for cache invalidation |
@@ -228,6 +232,28 @@ block with a new name, port, `TS_HOSTNAME` and `TS_EXTRA_ARGS`, then point
 stores at it individually via `EGRESS_PROXY`.
 
 The fleet exit node is **dad-truenas-scale** (`100.115.249.118`) — verified 24/24 on 2026-08-04.
+
+### A store's apex domain may be unreachable through the tunnel
+
+`SHOPIFY_HOST` should be the host the store actually serves from — usually the
+`www` one. Found with BIGBottleShop on 2026-09-17: the apex `bigbottleshop.com`
+succeeded **1/5 through the tunnel** while `www.bigbottleshop.com` was 5/5, the
+failures being 30-second connect timeouts rather than 429s or resets. The apex
+resolves to its own Shopify edge address (`23.227.38.68` / `2620:127:f00f:8::`);
+`www` is a CNAME to `shops.myshopify.com` (`…f00f:e::`), the edge the rest of the
+fleet uses. Forcing IPv4 does not help, and the apex is fine on the *direct*
+connection — so the only symptom is a store quietly logging egress fallbacks and
+polling on the bad IP.
+
+Because `EGRESS_FALLBACK` masks it as a working deployment, check a new store's
+fallback count after its first few polls:
+
+```bash
+docker logs shopify-catalog-<name>-watcher-1 2>&1 | grep -c 'falling back'
+```
+
+Anything above zero on a quiet fleet is worth chasing — try the `www` host
+before assuming a rate limit.
 `home-truenas-scale` (`100.91.141.83`) also tests clean but is already in use
 by ytdl; avoid sharing it. Confirm which node is active with
 `docker exec shopify-catalog-shopify-egress-1 tailscale status`; the selftest

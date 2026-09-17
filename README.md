@@ -86,6 +86,7 @@ docker compose -f docker-compose.<name>.yml down
 | `SHOPIFY_STOREFRONT_TOKEN` | *(disabled)* | Storefront API access token. When set, uses the GraphQL Storefront API instead of REST — enables access to Buy Button-only products invisible to collection endpoints. Use with `PRODUCT_TYPE_FILTER`. |
 | `PRODUCT_TAG_FILTER` | *(disabled)* | Comma-separated tags; only products with at least one matching tag are served. |
 | `PRODUCT_TYPE_FILTER` | *(disabled)* | Comma-separated `product_type` values; only products with a matching type are served. |
+| `PRODUCT_TYPE_EXCLUDE` | *(disabled)* | Comma-separated `product_type` values to drop. Denylist counterpart to `PRODUCT_TYPE_FILTER`, for a store whose collections omit stock and whose types are too inconsistent to allowlist. Case-insensitive; a blank `product_type` is never excluded. |
 | `PRODUCT_URL_BASE` | `https://{SHOPIFY_HOST}/products/` | Base URL for product detail links. |
 | `PROJECT_NAME` | `Catalog` | Used in Discord notification titles. |
 | `SERVER_HOSTNAME` | `localhost` | Watcher → server hostname for cache invalidation. |

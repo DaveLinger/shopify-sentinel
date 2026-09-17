@@ -1,0 +1,63 @@
+services:
+  tallacliquors-server:
+    build: .
+    command: node server.js
+    restart: unless-stopped
+    env_file: tallacliquors.env
+    environment:
+      - TZ=America/New_York
+    networks:
+      - proxy
+      - tallacliquors-internal
+      - shopify-egress
+    labels:
+      - "traefik.enable=true"
+
+      # HTTPS router
+      - "traefik.http.routers.tallacliquors.rule=Host(`tallacliquors.linger.dev`)"
+      - "traefik.http.routers.tallacliquors.entrypoints=websecure"
+      - "traefik.http.routers.tallacliquors.tls.certresolver=leresolver"
+      - "traefik.http.services.tallacliquors.loadbalancer.server.port=3000"
+
+      # HTTP router + redirect middleware
+      - "traefik.http.routers.tallacliquors-http.rule=Host(`tallacliquors.linger.dev`)"
+      - "traefik.http.routers.tallacliquors-http.entrypoints=web"
+      - "traefik.http.routers.tallacliquors-http.middlewares=redirect-to-https"
+
+      # Redirect middleware definition
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+      # Watchtower
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  tallacliquors-watcher:
+    build: .
+    command: node watcher.js
+    restart: unless-stopped
+    env_file: tallacliquors.env
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - tallacliquors-data:/data
+    networks:
+      - tallacliquors-internal
+      - shopify-egress
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+networks:
+  shopify-egress:
+    external: true
+  proxy:
+    external: true
+  tallacliquors-internal:
+    ipam:
+      config:
+        # Docker's default address pools are exhausted — explicit subnet required.
+        # Taken: 10.201.0.0/24 dramfellows, 10.201.1.0/24 shopify-egress,
+        # 10.201.2.0/24 dramcellars, 10.201.3.0/24 kingscountydistillery,
+        # 10.201.4.0/24 preetliquor.
+        - subnet: 10.201.5.0/24
+
+volumes:
+  tallacliquors-data:
