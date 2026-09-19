@@ -134,6 +134,41 @@ sudo systemctl restart docker
 
 ## Server
 
+### Collection view (added 2026-09-19)
+
+`GET /api/collections.json` lists the store's published collections;
+`GET /api/products.json?collection=<handle>` returns one collection's products.
+The UI exposes this as a type-ahead box plus a `/?collection=<handle>` deep link.
+
+**It fetches live rather than filtering the cache, deliberately.** The cache is a
+flat deduplicated list with no record of collection membership — but even if it
+had one, filtering would be wrong: `SHOPIFY_COLLECTION_PATH` scopes the
+deployment, and a promotion regularly includes products outside that scope.
+Measured on Seelbach's 2026 BHM case deal: **36 of 89 bottles** sit outside its
+tracked bourbon + rye scope. A "what's in this deal" view that silently omits 40%
+of the deal is worse than no view at all.
+
+The store-level tag/type filters are **not** applied to a collection view — an
+explicit request for a named collection should return that collection, not a
+denylisted subset of it. Per-handle cache 10 min, collection list 30 min.
+Unknown handle → `200` + empty array (Shopify returns 200 for a missing
+collection); malformed handle → `400`, so nothing is interpolated upstream.
+
+### URL parameters (added 2026-09-19)
+
+`collection`, `q`, `type`, `vendor`, `avail`, `sort` and `dir` all drive the UI
+from the query string, and `render()` rewrites the URL with `replaceState` so the
+address bar always matches the screen. `avail` accepts `in`/`out` as well as
+`true`/`false`; `sort` accepts the column names plus aliases (`type`, `created`,
+`date`, `name`, `variants`, `stock`).
+
+Two ordering constraints worth keeping: parameters are applied **after** the
+first `populateFilters()`, because the type and vendor `<option>`s do not exist
+until products have loaded and setting those selects earlier silently fails; and
+a `type`/`vendor` value absent from the loaded set is **dropped rather than
+applied**, since applying it would render an empty table with no visible cause.
+
+
 - Fetches all pages from Shopify internally; serves a single combined `{ products: [...] }` response
 - Stale-while-revalidate: serves cached data immediately, refreshes in background when TTL (10 min) is exceeded
 - Cold start blocks until first fetch completes

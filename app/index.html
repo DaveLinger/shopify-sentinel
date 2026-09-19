@@ -50,6 +50,9 @@
   .discount-none { color: #bbb; }
   .table-wrap { overflow-x: auto; }
   #main-controls { display: none; }
+  #filter-collection { min-width: 260px; }
+  .collection-note { background: #fff8e6; border-bottom: 1px solid #e8d9a8; padding: 9px 20px; font-size: 0.83rem; color: #6b5626; display: flex; gap: 12px; align-items: center; }
+  .collection-note a { color: #8a5a00; }
   @media(max-width: 700px) { td.tags-cell, th.tags-col { display: none; } }
   .no-type th[data-col="product_type"],
   .no-type td.type-cell,
@@ -64,6 +67,9 @@
 </header>
 <div class="controls" id="main-controls">
   <input type="search" id="search" placeholder="Search by title, vendor, tag…">
+  <input type="search" id="filter-collection" list="collection-list" autocomplete="off"
+         placeholder="All collections — type a name, handle or URL">
+  <datalist id="collection-list"></datalist>
   <select id="filter-type" class="type-filter"><option value="">All Types</option></select>
   <select id="filter-vendor"><option value="">All Vendors</option></select>
   <select id="filter-avail">
@@ -72,6 +78,10 @@
     <option value="false">Out of Stock</option>
   </select>
   <span id="count"></span>
+</div>
+<div class="collection-note" id="collection-note" style="display:none">
+  <span id="collection-note-text"></span>
+  <a href="#" id="collection-clear">show all products</a>
 </div>
 <div id="loading-wrap" class="loading-wrap">
   <div class="spinner"></div>
@@ -117,8 +127,16 @@ function populateFilters() {
   const vendors = [...new Set(RAW.map(p => p.vendor).filter(Boolean))].sort();
   const typeEl = document.getElementById('filter-type');
   const vendorEl = document.getElementById('filter-vendor');
+  // Rebuilt on every collection switch, so reset to the placeholder option
+  // first — otherwise each switch appends another copy of every type.
+  typeEl.innerHTML = '<option value="">All Types</option>';
+  vendorEl.innerHTML = '<option value="">All Vendors</option>';
   types.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; typeEl.appendChild(o); });
   vendors.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; vendorEl.appendChild(o); });
+  // A type/vendor that no longer exists in this collection would filter
+  // everything out with no visible cause.
+  if (![...typeEl.options].some(o => o.value === typeEl.value)) typeEl.value = '';
+  if (![...vendorEl.options].some(o => o.value === vendorEl.value)) vendorEl.value = '';
 }
 
 function render() {
@@ -178,6 +196,7 @@ function render() {
   }).join('');
 
   document.getElementById('count').textContent = filtered.length + ' / ' + RAW.length + ' products';
+  syncUrl();
 }
 
 document.querySelectorAll('thead th[data-col]').forEach(th => {
@@ -185,8 +204,7 @@ document.querySelectorAll('thead th[data-col]').forEach(th => {
     const col = th.dataset.col;
     sortDir = (sortCol === col) ? -sortDir : (col === 'discount' ? -1 : 1);
     sortCol = col;
-    document.querySelectorAll('thead th').forEach(t => t.classList.remove('sort-asc','sort-desc'));
-    th.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+    markSortHeader();
     render();
   });
 });
@@ -194,47 +212,231 @@ document.querySelectorAll('thead th[data-col]').forEach(th => {
   document.getElementById(id).addEventListener('input', render);
 });
 
-async function loadAllProducts() {
+function mapProducts(list) {
+  return (list || []).map(p => {
+    const price = parseFloat(p.variants[0].price);
+    const compareAt = p.variants[0].compare_at_price ? parseFloat(p.variants[0].compare_at_price) : null;
+    const discount = (compareAt && compareAt > price) ? Math.round((compareAt - price) / compareAt * 100) : 0;
+    return {
+      id: p.id,
+      title: p.title,
+      handle: p.handle,
+      vendor: p.vendor,
+      product_type: p.product_type,
+      tags: typeof p.tags === 'string' ? p.tags.split(',').map(t => t.trim()).filter(Boolean) : (p.tags || []),
+      price: price,
+      compare_at_price: compareAt,
+      discount: discount,
+      available: p.variants.some(v => v.available),
+      variant_count: p.variants.length,
+      image: p.images && p.images[0] ? p.images[0].src : null,
+      created_at: p.created_at
+    };
+  });
+}
+
+// ── Collections ────────────────────────────────────────────────────────────
+// A collection view is fetched live from Shopify rather than filtered out of
+// the loaded catalog: the catalog is scoped by SHOPIFY_COLLECTION_PATH, and a
+// promotion regularly includes bottles outside that scope (36 of the 89 in
+// Seelbach's Bourbon Heritage Month deal). Filtering locally would hide them.
+let COLLECTIONS = [];          // [{handle, title}]
+let activeCollection = null;   // {handle, title} or null for the whole catalog
+
+function resolveCollectionInput(raw) {
+  const v = (raw || '').trim();
+  if (!v) return null;
+  // Accept a pasted collection URL, so a link from the store works as-is.
+  const urlMatch = v.match(/\/collections\/([A-Za-z0-9_-]+)/);
+  if (urlMatch) {
+    const known = COLLECTIONS.find(c => c.handle === urlMatch[1]);
+    return known || { handle: urlMatch[1], title: urlMatch[1] };
+  }
+  const lower = v.toLowerCase();
+  const byTitle = COLLECTIONS.find(c => c.title.toLowerCase() === lower);
+  if (byTitle) return byTitle;
+  const byHandle = COLLECTIONS.find(c => c.handle.toLowerCase() === lower);
+  if (byHandle) return byHandle;
+  // Unlisted or brand-new collection: treat the raw text as a handle and let
+  // the server try it. An unknown handle comes back as an empty list, not an
+  // error, so the UI says "0 products" rather than looking broken.
+  if (/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(v)) return { handle: v, title: v };
+  return { handle: v, title: v, invalid: true };
+}
+
+async function loadCollectionList() {
   try {
-    const r = await fetch('/api/products.json');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const r = await fetch('/api/collections.json');
+    if (!r.ok) return;
     const data = await r.json();
-    RAW = (data.products || []).map(p => {
-      const price = parseFloat(p.variants[0].price);
-      const compareAt = p.variants[0].compare_at_price ? parseFloat(p.variants[0].compare_at_price) : null;
-      const discount = (compareAt && compareAt > price) ? Math.round((compareAt - price) / compareAt * 100) : 0;
-      return {
-        id: p.id,
-        title: p.title,
-        handle: p.handle,
-        vendor: p.vendor,
-        product_type: p.product_type,
-        tags: typeof p.tags === 'string' ? p.tags.split(',').map(t => t.trim()).filter(Boolean) : (p.tags || []),
-        price: price,
-        compare_at_price: compareAt,
-        discount: discount,
-        available: p.variants.some(v => v.available),
-        variant_count: p.variants.length,
-        image: p.images && p.images[0] ? p.images[0].src : null,
-        created_at: p.created_at
-      };
-    });
-    document.getElementById('loading-wrap').style.display = 'none';
-    document.getElementById('table-wrap').style.display = '';
-    document.getElementById('main-controls').style.display = 'flex';
-    document.getElementById('status').textContent = 'Loaded ' + RAW.length + ' products';
-    populateFilters();
-    document.querySelector('th[data-col="created_at"]').classList.add('sort-desc');
-    render();
-  } catch(err) {
-    document.getElementById('loading-msg').textContent = 'Failed to load products: ' + err.message;
-    document.querySelector('.spinner').style.display = 'none';
-    document.getElementById('status').textContent = 'Error';
-    document.getElementById('status').className = 'error';
+    COLLECTIONS = data.collections || [];
+    const dl = document.getElementById('collection-list');
+    dl.innerHTML = COLLECTIONS.map(c =>
+      '<option value="' + c.title.replace(/"/g, '&quot;') + '">' + c.handle + '</option>').join('');
+  } catch (err) {
+    // The catalog still works without the type-ahead; a handle can be typed.
+    console.warn('collection list unavailable:', err.message);
   }
 }
 
-loadAllProducts();
+function showCollectionNote() {
+  const note = document.getElementById('collection-note');
+  if (!activeCollection) { note.style.display = 'none'; return; }
+  document.getElementById('collection-note-text').textContent =
+    'Showing collection “' + activeCollection.title + '” (' + RAW.length + ' product'
+    + (RAW.length === 1 ? '' : 's') + ') — fetched live from the store, including bottles outside this catalog’s normal scope.';
+  note.style.display = 'flex';
+}
+
+async function loadProducts(collection) {
+  const wrap = document.getElementById('loading-wrap');
+  const status = document.getElementById('status');
+  document.getElementById('table-wrap').style.display = 'none';
+  document.querySelector('.spinner').style.display = '';
+  document.getElementById('loading-msg').textContent = collection
+    ? 'Fetching “' + collection.title + '” from the store…'
+    : 'Fetching products…';
+  wrap.style.display = 'flex';
+  status.className = '';
+  try {
+    const url = collection
+      ? '/api/products.json?collection=' + encodeURIComponent(collection.handle)
+      : '/api/products.json';
+    const r = await fetch(url);
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { const e = await r.json(); if (e.error) msg = e.error; } catch (_) {}
+      throw new Error(msg);
+    }
+    const data = await r.json();
+    RAW = mapProducts(data.products);
+    activeCollection = collection;
+    wrap.style.display = 'none';
+    document.getElementById('table-wrap').style.display = '';
+    document.getElementById('main-controls').style.display = 'flex';
+    status.textContent = collection
+      ? 'Loaded ' + RAW.length + ' from “' + collection.title + '”'
+      : 'Loaded ' + RAW.length + ' products';
+    populateFilters();
+    applyPendingParams();
+    showCollectionNote();
+    render();
+  } catch (err) {
+    document.getElementById('loading-msg').textContent = 'Failed to load products: ' + err.message;
+    document.querySelector('.spinner').style.display = 'none';
+    status.textContent = 'Error';
+    status.className = 'error';
+  }
+}
+
+// ── URL parameters ─────────────────────────────────────────────────────────
+// Every filter and the sort live in the query string, so any view is a
+// shareable link: ?collection=2026-bhm-case-deal&avail=in&sort=discount
+// The URL is rewritten with replaceState on each change, so the address bar
+// always reflects what is on screen without piling up history entries.
+const SORT_COLS = ['title', 'vendor', 'product_type', 'price', 'discount',
+                   'available', 'variant_count', 'created_at'];
+// Friendlier spellings for the ones worth typing by hand.
+const SORT_ALIASES = { type: 'product_type', created: 'created_at', date: 'created_at',
+                       name: 'title', variants: 'variant_count', stock: 'available' };
+const AVAIL_ALIASES = { 'in': 'true', 'instock': 'true', 'in-stock': 'true', 'yes': 'true',
+                        'out': 'false', 'oos': 'false', 'no': 'false' };
+
+function syncUrl() {
+  const u = new URL(window.location.href);
+  const set = (k, v) => { if (v) u.searchParams.set(k, v); else u.searchParams.delete(k); };
+  set('collection', activeCollection ? activeCollection.handle : '');
+  set('q', document.getElementById('search').value.trim());
+  set('type', document.getElementById('filter-type').value);
+  set('vendor', document.getElementById('filter-vendor').value);
+  set('avail', document.getElementById('filter-avail').value);
+  // Only pin the sort when it differs from the default view.
+  if (sortCol === 'created_at' && sortDir === -1) { u.searchParams.delete('sort'); u.searchParams.delete('dir'); }
+  else { set('sort', sortCol); set('dir', sortDir === 1 ? 'asc' : 'desc'); }
+  history.replaceState(null, '', u);
+}
+
+// Applied once, after the first populateFilters() — the type and vendor options
+// do not exist until products have loaded, so setting those selects any earlier
+// would silently not stick.
+let pendingParams = null;
+
+function readParams() {
+  const q = new URL(window.location.href).searchParams;
+  const rawSort = (q.get('sort') || '').trim().toLowerCase();
+  const sort = SORT_ALIASES[rawSort] || rawSort;
+  const rawAvail = (q.get('avail') || '').trim().toLowerCase();
+  return {
+    collection: (q.get('collection') || '').trim(),
+    q: q.get('q') || '',
+    type: q.get('type') || '',
+    vendor: q.get('vendor') || '',
+    avail: AVAIL_ALIASES[rawAvail] !== undefined ? AVAIL_ALIASES[rawAvail]
+         : (rawAvail === 'true' || rawAvail === 'false') ? rawAvail : '',
+    sort: SORT_COLS.includes(sort) ? sort : '',
+    dir: (q.get('dir') || '').trim().toLowerCase() === 'asc' ? 1
+       : (q.get('dir') || '').trim().toLowerCase() === 'desc' ? -1 : null,
+  };
+}
+
+function applyPendingParams() {
+  if (!pendingParams) return;
+  const pp = pendingParams;
+  pendingParams = null;
+  if (pp.q) document.getElementById('search').value = pp.q;
+  if (pp.avail) document.getElementById('filter-avail').value = pp.avail;
+  // A type or vendor that this collection does not contain is dropped rather
+  // than applied, which would show an empty table with no visible cause.
+  const typeEl = document.getElementById('filter-type');
+  const vendorEl = document.getElementById('filter-vendor');
+  if (pp.type && [...typeEl.options].some(o => o.value === pp.type)) typeEl.value = pp.type;
+  if (pp.vendor && [...vendorEl.options].some(o => o.value === pp.vendor)) vendorEl.value = pp.vendor;
+  if (pp.sort) {
+    sortCol = pp.sort;
+    sortDir = pp.dir !== null ? pp.dir : (pp.sort === 'discount' || pp.sort === 'created_at' ? -1 : 1);
+  }
+  markSortHeader();
+}
+
+function markSortHeader() {
+  document.querySelectorAll('thead th').forEach(t => t.classList.remove('sort-asc', 'sort-desc'));
+  const th = document.querySelector('th[data-col="' + sortCol + '"]');
+  if (th) th.classList.add(sortDir === 1 ? 'sort-asc' : 'sort-desc');
+}
+
+document.getElementById('filter-collection').addEventListener('change', () => {
+  const target = resolveCollectionInput(document.getElementById('filter-collection').value);
+  if (target && target.handle === (activeCollection && activeCollection.handle)) return;
+  loadProducts(target);
+});
+
+document.getElementById('collection-clear').addEventListener('click', (e) => {
+  e.preventDefault();
+  document.getElementById('filter-collection').value = '';
+  loadProducts(null);
+});
+
+// Deep link: /?collection=<handle> loads straight into that collection, so a
+// promotion view can be bookmarked or shared.
+(async function init() {
+  const params = readParams();
+  pendingParams = params;
+  markSortHeader();
+  loadCollectionList();
+  const wanted = params.collection;
+  await loadProducts(wanted ? { handle: wanted, title: wanted } : null);
+  if (wanted) {
+    // Once the list arrives, upgrade the handle in the box to its real title.
+    const known = COLLECTIONS.find(c => c.handle === wanted);
+    if (known) {
+      activeCollection = known;
+      document.getElementById('filter-collection').value = known.title;
+      showCollectionNote();
+    } else {
+      document.getElementById('filter-collection').value = wanted;
+    }
+  }
+})();
 </script>
 </body>
 </html>

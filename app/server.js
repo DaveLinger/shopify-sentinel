@@ -129,6 +129,62 @@ async function fetchAllFromPath(collectionPath) {
   return all;
 }
 
+// ── Collection browsing (added 2026-09-19) ─────────────────────────────────
+//
+// The main cache is a flat, deduplicated product list that does not record
+// which collection each product came from, so a collection view cannot be
+// answered from it. It also *must not* be: SHOPIFY_COLLECTION_PATH scopes what
+// this deployment tracks (Seelbach's watches bourbon + rye), while a
+// promotional collection routinely reaches outside that scope. Measured on
+// Seelbach's 2026 Bourbon Heritage Month case deal: 36 of its 89 bottles are
+// outside the tracked scope, including Blue Run and Pinhook bourbons. Filtering
+// the cache would silently drop them, and silently dropping bottles is the one
+// thing a "what is in this deal" view must never do. So collection views are
+// fetched live from Shopify and cached per handle.
+//
+// The store-level PRODUCT_TAG/TYPE filters are deliberately NOT applied here.
+// Asking for a named collection is an explicit request for that collection's
+// contents; a denylist meant to keep beer out of the default catalog should not
+// quietly edit a promotion the user asked to see.
+const COLLECTION_TTL_MS = 10 * 60 * 1000;
+const COLLECTION_LIST_TTL_MS = 30 * 60 * 1000;
+const collectionCache = new Map(); // handle -> { products, fetchedAt }
+let collectionList = { items: null, fetchedAt: 0 };
+
+// Shopify handles are alphanumerics plus dashes/underscores. Anything else is
+// rejected rather than interpolated into an upstream request path.
+const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,100}$/i;
+
+async function fetchCollectionList() {
+  const now = Date.now();
+  if (collectionList.items && now - collectionList.fetchedAt < COLLECTION_LIST_TTL_MS) {
+    return collectionList.items;
+  }
+  const items = [];
+  // Seelbach's publishes 526 collections, so this pages; 8 pages is a generous
+  // ceiling that still bounds a misbehaving store.
+  for (let page = 1; page <= 8; page++) {
+    const data = await fetchPageWithRetry('/collections.json', page);
+    const batch = data.collections || [];
+    for (const c of batch) {
+      if (c && c.handle) items.push({ handle: c.handle, title: c.title || c.handle });
+    }
+    if (batch.length < 250) break;
+  }
+  items.sort((a, b) => a.title.localeCompare(b.title));
+  collectionList = { items, fetchedAt: now };
+  return items;
+}
+
+async function fetchCollectionProducts(handle) {
+  const now = Date.now();
+  const hit = collectionCache.get(handle);
+  if (hit && now - hit.fetchedAt < COLLECTION_TTL_MS) return hit.products;
+  const products = await fetchAllFromPath('/collections/' + handle + '/products.json');
+  collectionCache.set(handle, { products, fetchedAt: now });
+  return products;
+}
+
 function postGraphQL(query, variables) {
   return egress.viaEgress(agent => postGraphQLOnce(query, variables, agent), 'graphql');
 }
@@ -287,7 +343,8 @@ async function serveProducts(res) {
 }
 
 const server = http.createServer((req, res) => {
-  const pathname = url.parse(req.url).pathname;
+  const parsedUrl = url.parse(req.url, true);
+  const pathname = parsedUrl.pathname;
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET' });
@@ -296,7 +353,42 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/api/products.json') {
-    serveProducts(res);
+    const handle = (parsedUrl.query.collection || '').trim();
+    if (!handle) { serveProducts(res); return; }
+    if (!HANDLE_RE.test(handle)) {
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: 'invalid collection handle' }));
+      return;
+    }
+    fetchCollectionProducts(handle).then(products => {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-cache',
+      });
+      res.end(JSON.stringify({ products, collection: handle }));
+    }).catch(err => {
+      res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+    return;
+  }
+
+  // The store's published collections, for the UI's collection type-ahead.
+  // A handle that does not exist returns HTTP 200 with an empty products array
+  // rather than a 404, so the UI reports "0 products" instead of an error —
+  // the same Shopify quirk that once left DarkArtsWhiskey silently empty.
+  if (pathname === '/api/collections.json') {
+    fetchCollectionList().then(collections => {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({ collections }));
+    }).catch(err => {
+      res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
     return;
   }
 

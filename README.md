@@ -105,10 +105,60 @@ docker compose -f docker-compose.<name>.yml down
 ## API
 
 ```
-GET  /api/products.json      → { products: [...] }
-GET  /api/health             → { ok, starting?, count, cacheAgeSeconds, fetching }
-POST /api/cache/invalidate   → { ok, count }
+GET  /api/products.json                 → { products: [...] }
+GET  /api/products.json?collection=<h>  → { products: [...], collection }
+GET  /api/collections.json              → { collections: [{ handle, title }] }
+GET  /api/health                        → { ok, starting?, count, cacheAgeSeconds, fetching }
+POST /api/cache/invalidate              → { ok, count }
 ```
+
+### Collection view
+
+The catalog UI has a collection box (type-ahead over the store's published
+collections; a handle or a pasted `/collections/<handle>` URL also works), and
+`/?collection=<handle>` deep-links straight into one — handy for bookmarking a
+promotion.
+
+A collection view is **fetched live from Shopify, not filtered out of the loaded
+catalog**, for two reasons. The cache is a flat deduplicated list that never
+recorded which collection a product came from; and more importantly
+`SHOPIFY_COLLECTION_PATH` scopes what the deployment tracks, while a promotion
+routinely reaches outside that scope — 36 of the 89 bottles in Seelbach's 2026
+Bourbon Heritage Month case deal are outside its tracked bourbon + rye scope,
+including Blue Run and Pinhook bourbons. Filtering locally would silently drop
+them.
+
+For the same reason the store-level `PRODUCT_TAG_FILTER` / `PRODUCT_TYPE_FILTER`
+/ `PRODUCT_TYPE_EXCLUDE` are **not** applied to a collection view: asking for a
+named collection is an explicit request for its contents, and a denylist meant
+to keep beer out of the default catalog should not quietly edit a promotion.
+
+Responses are cached per handle for 10 minutes, and the collection list for 30.
+An unknown handle returns `200` with an empty array (Shopify's behaviour), so the
+UI shows "0 products" rather than an error; a malformed handle returns `400`.
+
+### URL parameters
+
+Every filter and the sort order can be set from the query string, so any view is a shareable link:
+
+```
+/?collection=2026-bhm-case-deal&avail=in&sort=price&dir=asc
+```
+
+| Parameter | Values | Notes |
+|---|---|---|
+| `collection` | collection handle | Fetched live from the store |
+| `q` | free text | Same as the search box (title, vendor, type, tags) |
+| `type` | a `product_type` | Ignored if the loaded set has no such type |
+| `vendor` | a vendor name | Ignored if the loaded set has no such vendor |
+| `avail` | `in` / `out` (also `true`/`false`, `in-stock`, `oos`, `yes`/`no`) | |
+| `sort` | `title`, `vendor`, `product_type`, `price`, `discount`, `available`, `variant_count`, `created_at` | Aliases: `type`, `created`, `date`, `name`, `variants`, `stock` |
+| `dir` | `asc` / `desc` | Defaults to descending for `discount` and `created_at`, ascending otherwise |
+
+Unrecognised values are ignored rather than applied, so a bad link still shows a
+usable catalog instead of an empty table. The address bar is rewritten
+(`replaceState`) as filters change, so the current view is always copy-pasteable.
+
 
 Response header `X-Cache: HIT | STALE | MISS` indicates whether the response was served from cache.
 
